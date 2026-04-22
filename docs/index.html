@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>AI Companion</title>
+<link rel="icon" href="avatar.png" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- Settings dialog (first-run + gear icon) -->
+  <dialog id="settings">
+    <form method="dialog" id="settingsForm">
+      <h2>Connect to your middleware</h2>
+      <p class="muted">These are stored only in this browser (localStorage).</p>
+
+      <label>Middleware base URL
+        <input id="cfgEndpoint" type="url" placeholder="https://your-service.up.railway.app" required />
+      </label>
+      <label>API key (<code>x-api-key</code>)
+        <input id="cfgApiKey" type="password" placeholder="one of MIDDLEWARE_API_KEYS" required />
+      </label>
+      <label>Voice ID (optional override)
+        <input id="cfgVoice" type="text" placeholder="defaults to server ELEVENLABS_VOICE_ID" />
+      </label>
+      <label>Companion name
+        <input id="cfgName" type="text" placeholder="Companion" />
+      </label>
+
+      <div class="dialog-actions">
+        <button type="button" id="testBtn" class="secondary">Test connection</button>
+        <button type="submit" value="save">Save</button>
+      </div>
+      <p id="testResult" class="muted"></p>
+    </form>
+  </dialog>
+
+  <!-- Avatar stage -->
+  <section id="stage" aria-label="AI companion avatar">
+    <div id="frame">
+      <div id="bgGrid"></div>
+      <canvas id="waveform" aria-hidden="true"></canvas>
+      <div id="portrait" data-mood="neutral">
+        <img id="avatarImg" src="avatar.png" alt="Companion portrait" draggable="false" />
+        <div id="blink" aria-hidden="true"></div>
+        <div id="mouth" aria-hidden="true"></div>
+        <div id="moodTint" aria-hidden="true"></div>
+      </div>
+      <div id="stageLabel">
+        <div class="title">AI COMPANION</div>
+        <div class="state" id="stateText">INITIALIZING</div>
+        <div class="substate" id="subStateText">Tap settings to begin</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Chat panel -->
+  <section id="chat" aria-label="Conversation">
+    <header id="chatHeader">
+      <div class="dot" id="connDot" title="Not connected"></div>
+      <div id="headerTitle">AI Companion</div>
+      <div class="spacer"></div>
+      <button id="muteBtn" class="icon" title="Mute voice" aria-pressed="false">🔊</button>
+      <button id="clearBtn" class="icon" title="Clear conversation">🗑</button>
+      <button id="settingsBtn" class="icon" title="Settings">⚙</button>
+    </header>
+
+    <div id="messages" role="log" aria-live="polite"></div>
+
+    <form id="composer">
+      <textarea id="input" rows="1" placeholder="Type a message… (Enter to send, Shift+Enter for newline)" autocomplete="off"></textarea>
+      <button id="sendBtn" type="submit" title="Send">Send</button>
+    </form>
+  </section>
+
+</div>
+
+<script src="app.js" type="module"></script>
+</body>
+</html>

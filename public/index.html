@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>AI-Voice Tester — Grok → ElevenLabs</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem;
+    font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    background: #0b0f14; color: #e6edf3;
+    display: flex; justify-content: center;
+  }
+  main { width: 100%; max-width: 720px; }
+  h1 { margin: 0 0 .25rem; font-size: 1.5rem; }
+  p.sub { margin: 0 0 1.5rem; color: #8b949e; }
+  label { display: block; margin: 1rem 0 .35rem; font-weight: 600; color: #c9d1d9; }
+  input, textarea, select {
+    width: 100%; padding: .7rem .8rem;
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    color: inherit; font: inherit;
+  }
+  textarea { min-height: 110px; resize: vertical; }
+  input:focus, textarea:focus, select:focus { outline: 2px solid #2f81f7; border-color: transparent; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
+  button {
+    margin-top: 1.25rem; padding: .75rem 1.2rem;
+    background: #238636; color: #fff; border: 0; border-radius: 8px;
+    font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { background: #30363d; color: #8b949e; cursor: not-allowed; }
+  button.secondary { background: #30363d; }
+  .actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+  .status { margin-top: 1rem; padding: .6rem .8rem; border-radius: 8px;
+            background: #161b22; border: 1px solid #30363d; min-height: 2.6rem; }
+  .status.err { border-color: #f85149; color: #ffa198; }
+  .status.ok  { border-color: #238636; }
+  .reply { margin-top: 1rem; padding: .8rem 1rem;
+            background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+            white-space: pre-wrap; }
+  audio { width: 100%; margin-top: 1rem; }
+  details { margin-top: 1rem; color: #8b949e; }
+  details summary { cursor: pointer; }
+  .muted { color: #8b949e; font-size: .85rem; }
+  kbd { background: #161b22; border: 1px solid #30363d; padding: 1px 6px; border-radius: 4px; font-size: .85em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>AI-Voice Tester</h1>
+  <p class="sub">Sends a prompt to Grok, plays the reply through ElevenLabs.</p>
+
+  <label for="endpoint">Middleware base URL</label>
+  <input id="endpoint" placeholder="https://your-service.up.railway.app" />
+
+  <label for="apikey">Middleware API key <span class="muted">(x-api-key)</span></label>
+  <input id="apikey" type="password" placeholder="paste one of MIDDLEWARE_API_KEYS" />
+
+  <label for="prompt">Prompt</label>
+  <textarea id="prompt" placeholder="Say something cheerful about today.">Give me a one-sentence motivational quote.</textarea>
+
+  <details>
+    <summary>Advanced options</summary>
+    <div class="row">
+      <div>
+        <label for="voiceid">Voice ID <span class="muted">(optional override)</span></label>
+        <input id="voiceid" placeholder="e.g. NQMJRVvPew6H..." />
+      </div>
+      <div>
+        <label for="model">Grok model</label>
+        <input id="model" placeholder="grok-2-latest" />
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="temperature">Temperature</label>
+        <input id="temperature" type="number" step="0.1" min="0" max="2" value="0.7" />
+      </div>
+      <div>
+        <label for="system">System prompt <span class="muted">(optional)</span></label>
+        <input id="system" placeholder="override server default" />
+      </div>
+    </div>
+  </details>
+
+  <div class="actions">
+    <button id="go">Generate &amp; speak</button>
+    <button id="chatOnly" class="secondary" type="button">Text only (no TTS)</button>
+    <button id="health" class="secondary" type="button">Check /health</button>
+  </div>
+
+  <div id="status" class="status">Ready.</div>
+  <div id="reply" class="reply" hidden></div>
+  <audio id="audio" controls hidden></audio>
+
+  <p class="muted" style="margin-top:2rem">
+    Tip: press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> in the prompt to submit.
+    Settings are saved in your browser's localStorage.
+  </p>
+</main>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const STORE_KEYS = ['endpoint','apikey','voiceid','model','temperature','system','prompt'];
+
+  // Restore saved values
+  for (const k of STORE_KEYS) {
+    const v = localStorage.getItem('aivoice.' + k);
+    if (v !== null) $(k).value = v;
+  }
+  // Default endpoint to same origin when hosted by the middleware itself.
+  if (!$('endpoint').value) $('endpoint').value = location.origin;
+
+  const save = () => {
+    for (const k of STORE_KEYS) localStorage.setItem('aivoice.' + k, $(k).value);
+  };
+  for (const k of STORE_KEYS) $(k).addEventListener('change', save);
+
+  function setStatus(msg, kind) {
+    const el = $('status');
+    el.textContent = msg;
+    el.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  function baseUrl() {
+    return $('endpoint').value.trim().replace(/\/+$/, '');
+  }
+
+  function headers() {
+    const h = { 'Content-Type': 'application/json' };
+    const k = $('apikey').value.trim();
+    if (k) h['x-api-key'] = k;
+    return h;
+  }
+
+  function buildBody(includeVoice) {
+    const body = { prompt: $('prompt').value };
+    const t = parseFloat($('temperature').value);
+    if (!Number.isNaN(t)) body.temperature = t;
+    const m = $('model').value.trim();
+    if (m) body.model = m;
+    const s = $('system').value.trim();
+    if (s) body.system = s;
+    if (includeVoice) {
+      const v = $('voiceid').value.trim();
+      if (v) body.voiceId = v;
+    }
+    return body;
+  }
+
+  async function extractError(res) {
+    try {
+      const j = await res.json();
+      return j.error || JSON.stringify(j);
+    } catch {
+      return await res.text().catch(() => res.statusText);
+    }
+  }
+
+  $('health').onclick = async () => {
+    try {
+      setStatus('Pinging /health...');
+      const r = await fetch(baseUrl() + '/health');
+      const j = await r.json();
+      setStatus('Health: ' + JSON.stringify(j), r.ok ? 'ok' : 'err');
+    } catch (e) {
+      setStatus('Fetch failed: ' + e.message, 'err');
+    }
+  };
+
+  $('chatOnly').onclick = async () => {
+    save();
+    try {
+      setStatus('Calling Grok...');
+      const r = await fetch(baseUrl() + '/v1/chat', {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify(buildBody(false)),
+      });
+      if (!r.ok) return setStatus('Error: ' + await extractError(r), 'err');
+      const j = await r.json();
+      const reply = $('reply');
+      reply.textContent = j.text || '(empty)';
+      reply.hidden = false;
+      setStatus('Grok replied.', 'ok');
+    } catch (e) {
+      setStatus('Fetch failed: ' + e.message, 'err');
+    }
+  };
+
+  $('go').onclick = async () => {
+    save();
+    const audio = $('audio');
+    const reply = $('reply');
+    reply.hidden = true;
+    audio.hidden = true;
+    audio.removeAttribute('src');
+    try {
+      setStatus('Generating response and audio...');
+      const r = await fetch(baseUrl() + '/v1/grok-speak?return=json', {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify(buildBody(true)),
+      });
+      if (!r.ok) return setStatus('Error: ' + await extractError(r), 'err');
+      const j = await r.json();
+      if (j.text) { reply.textContent = j.text; reply.hidden = false; }
+      if (j.audio_base64) {
+        const bin = atob(j.audio_base64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const blob = new Blob([bytes], { type: j.content_type || 'audio/mpeg' });
+        audio.src = URL.createObjectURL(blob);
+        audio.hidden = false;
+        audio.play().catch(() => {});
+        setStatus('Done. Playing audio.', 'ok');
+      } else {
+        setStatus('No audio returned.', 'err');
+      }
+    } catch (e) {
+      setStatus('Fetch failed: ' + e.message, 'err');
+    }
+  };
+
+  $('prompt').addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); $('go').click(); }
+  });
+</script>
+</body>
+</html>

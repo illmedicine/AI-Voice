@@ -1,0 +1,333 @@
+:root {
+  --bg: #050814;
+  --bg-2: #0a1024;
+  --panel: #0f1530cc;
+  --panel-border: #1f2a55;
+  --accent: #2bd7ff;
+  --accent-2: #7c5cff;
+  --text: #e9f0ff;
+  --muted: #8ea0c7;
+  --danger: #ff6b7a;
+  --ok: #35e08b;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(1200px 700px at 20% -10%, #1a2566 0%, transparent 60%),
+    radial-gradient(900px 600px at 110% 110%, #3b1f7a 0%, transparent 55%),
+    var(--bg);
+  overflow: hidden;
+}
+button { font: inherit; color: inherit; }
+input, textarea { font: inherit; color: inherit; }
+a { color: var(--accent); }
+
+#app {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(320px, 520px);
+  gap: 16px;
+  padding: 16px;
+  height: 100vh;
+}
+@media (max-width: 900px) {
+  #app { grid-template-columns: 1fr; grid-template-rows: minmax(300px, 45vh) 1fr; }
+}
+
+/* ---------- Avatar stage ---------- */
+#stage {
+  position: relative;
+  border-radius: 20px;
+  overflow: hidden;
+  background:
+    linear-gradient(160deg, #0a1230 0%, #1a0a3b 100%);
+  border: 1px solid var(--panel-border);
+  box-shadow: 0 30px 80px rgba(0,0,0,.45), inset 0 0 0 1px #ffffff08;
+  display: flex; align-items: center; justify-content: center;
+}
+#frame {
+  position: relative;
+  width: min(100%, 560px);
+  aspect-ratio: 3 / 4;
+  margin: 16px;
+  border-radius: 18px;
+  overflow: hidden;
+  background: linear-gradient(180deg, #0d1640 0%, #14063a 100%);
+  box-shadow:
+    inset 0 0 0 2px #2bd7ff33,
+    inset 0 0 60px #2bd7ff1a,
+    0 0 40px #2bd7ff22;
+}
+#bgGrid {
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(#2bd7ff12 1px, transparent 1px),
+    linear-gradient(90deg, #2bd7ff12 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: radial-gradient(ellipse at center, #000 30%, transparent 75%);
+  animation: drift 24s linear infinite;
+}
+@keyframes drift {
+  from { background-position: 0 0, 0 0; }
+  to   { background-position: 280px 0, 0 280px; }
+}
+#waveform {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  width: 100%; height: 28%;
+  opacity: .75;
+  pointer-events: none;
+}
+
+#portrait {
+  position: absolute; inset: 0;
+  display: flex; align-items: flex-start; justify-content: center;
+  transform-origin: 50% 55%;
+  animation: idleSway 6s ease-in-out infinite;
+}
+#avatarImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 25%;
+  filter: saturate(1.02) contrast(1.02);
+  transition: filter .35s ease;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* Mood-driven color grade */
+#moodTint {
+  position: absolute; inset: 0;
+  mix-blend-mode: soft-light;
+  pointer-events: none;
+  transition: background .5s ease, opacity .5s ease;
+  opacity: .6;
+}
+#portrait[data-mood="happy"]    #moodTint { background: radial-gradient(ellipse at 50% 40%, #ffd86b55, transparent 60%); }
+#portrait[data-mood="excited"]  #moodTint { background: radial-gradient(ellipse at 50% 40%, #ff7ad955, transparent 60%); }
+#portrait[data-mood="flirty"]   #moodTint { background: radial-gradient(ellipse at 50% 40%, #ff6b9e55, transparent 65%); }
+#portrait[data-mood="playful"]  #moodTint { background: radial-gradient(ellipse at 50% 40%, #8affd955, transparent 60%); }
+#portrait[data-mood="confident"]#moodTint { background: radial-gradient(ellipse at 50% 40%, #7c5cff55, transparent 60%); }
+#portrait[data-mood="thinking"] #moodTint { background: radial-gradient(ellipse at 50% 40%, #2bd7ff44, transparent 60%); }
+#portrait[data-mood="surprised"]#moodTint { background: radial-gradient(ellipse at 50% 40%, #ffffff66, transparent 55%); }
+#portrait[data-mood="concerned"]#moodTint { background: radial-gradient(ellipse at 50% 40%, #ffae5b44, transparent 60%); }
+#portrait[data-mood="sad"]      #moodTint { background: radial-gradient(ellipse at 50% 40%, #5b9dff55, transparent 65%); opacity: .75; }
+#portrait[data-mood="neutral"]  #moodTint { background: radial-gradient(ellipse at 50% 40%, #2bd7ff22, transparent 70%); }
+
+/* Mood-driven subtle scale/tilt */
+#portrait[data-mood="excited"],
+#portrait[data-mood="happy"]    { animation: moodBop 1.6s ease-in-out infinite; }
+#portrait[data-mood="surprised"]{ transform: scale(1.03); }
+#portrait[data-mood="sad"]      { filter: saturate(.85) brightness(.92); }
+#portrait[data-mood="thinking"] { animation: moodThink 4s ease-in-out infinite; }
+
+@keyframes idleSway {
+  0%,100% { transform: translateY(0) rotate(0deg); }
+  50%     { transform: translateY(-4px) rotate(.4deg); }
+}
+@keyframes moodBop {
+  0%,100% { transform: translateY(0) scale(1); }
+  50%     { transform: translateY(-2px) scale(1.01); }
+}
+@keyframes moodThink {
+  0%,100% { transform: rotate(-.5deg); }
+  50%     { transform: rotate(.8deg); }
+}
+
+/* Blink — a thin dark band sweeps across eye area briefly */
+#blink {
+  position: absolute;
+  left: 22%; right: 22%;
+  top: 34%; height: 3%;
+  background: linear-gradient(#00000000, #000000d9 50%, #00000000);
+  transform: scaleY(0);
+  transform-origin: center;
+  pointer-events: none;
+  border-radius: 4px;
+}
+#blink.blink { animation: blink .22s ease-in-out; }
+@keyframes blink {
+  0%,100% { transform: scaleY(0); }
+  40%,60% { transform: scaleY(1); }
+}
+
+/* Mouth — thin elliptical darkening over mouth region,
+   opacity/scale driven by --mouth CSS var */
+#mouth {
+  position: absolute;
+  left: 44%; right: 44%;
+  top: 63%; height: 3.2%;
+  background: radial-gradient(ellipse at center, #000000d0 0%, #00000060 60%, transparent 75%);
+  border-radius: 50%;
+  opacity: calc(var(--mouth, 0) * 0.9);
+  transform: scaleY(calc(0.4 + var(--mouth, 0) * 1.3))
+             scaleX(calc(0.85 + var(--mouth, 0) * 0.4));
+  transform-origin: center;
+  transition: opacity .05s linear, transform .05s linear;
+  pointer-events: none;
+  filter: blur(1.5px);
+}
+
+#stageLabel {
+  position: absolute; left: 0; right: 0; bottom: 14px;
+  text-align: center;
+  text-shadow: 0 2px 18px #0008;
+  pointer-events: none;
+}
+#stageLabel .title {
+  font-weight: 700; letter-spacing: .25em;
+  font-size: clamp(14px, 2.4vw, 20px);
+}
+#stageLabel .state {
+  color: var(--accent);
+  font-weight: 700; letter-spacing: .35em;
+  margin-top: 4px;
+  font-size: clamp(11px, 1.6vw, 13px);
+}
+#stageLabel .substate {
+  color: var(--muted);
+  letter-spacing: .2em;
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+/* ---------- Chat panel ---------- */
+#chat {
+  display: flex; flex-direction: column;
+  border-radius: 20px;
+  background: var(--panel);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--panel-border);
+  overflow: hidden;
+  min-height: 0;
+}
+#chatHeader {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--panel-border);
+  background: #0b1130cc;
+}
+#chatHeader .dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--danger); box-shadow: 0 0 8px currentColor;
+}
+#chatHeader .dot.ok { background: var(--ok); }
+#chatHeader .dot.busy { background: var(--accent); animation: pulse 1s infinite; }
+@keyframes pulse { 0%,100%{opacity:.5} 50%{opacity:1} }
+#chatHeader #headerTitle { font-weight: 600; }
+#chatHeader .spacer { flex: 1; }
+.icon {
+  background: transparent; border: 1px solid transparent; color: var(--muted);
+  width: 34px; height: 34px; border-radius: 8px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 16px;
+}
+.icon:hover { border-color: var(--panel-border); color: var(--text); }
+
+#messages {
+  flex: 1; min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.msg {
+  max-width: 82%;
+  padding: 10px 13px;
+  border-radius: 14px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  animation: pop .18s ease-out;
+}
+@keyframes pop { from { transform: translateY(4px); opacity: 0 } to { transform: none; opacity: 1 } }
+.msg.user {
+  align-self: flex-end;
+  background: linear-gradient(135deg, #2bd7ff, #7c5cff);
+  color: #07122a;
+  border-bottom-right-radius: 4px;
+}
+.msg.bot {
+  align-self: flex-start;
+  background: #141b3bcc;
+  border: 1px solid var(--panel-border);
+  border-bottom-left-radius: 4px;
+}
+.msg.err {
+  align-self: center;
+  background: #3a0e18;
+  border: 1px solid var(--danger);
+  color: #ffd6dc;
+  font-size: 13px;
+}
+.msg .mood {
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #2bd7ff22;
+  color: var(--accent);
+  vertical-align: 1px;
+}
+.msg.typing::after {
+  content: "…";
+  display: inline-block;
+  animation: dots 1.2s steps(4, end) infinite;
+  width: 1em;
+}
+@keyframes dots { 0%{content:""} 25%{content:"."} 50%{content:".."} 75%{content:"..."} }
+
+#composer {
+  display: flex; gap: 8px;
+  padding: 10px; border-top: 1px solid var(--panel-border);
+  background: #0a1130cc;
+}
+#input {
+  flex: 1;
+  resize: none;
+  max-height: 140px;
+  padding: 10px 12px;
+  background: #0b1230;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  outline: none;
+}
+#input:focus { border-color: var(--accent); }
+#sendBtn {
+  padding: 0 18px;
+  background: linear-gradient(135deg, #2bd7ff, #7c5cff);
+  color: #07122a; font-weight: 700;
+  border: 0; border-radius: 10px; cursor: pointer;
+}
+#sendBtn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ---------- Settings dialog ---------- */
+dialog#settings {
+  border: 1px solid var(--panel-border);
+  background: #0b1130f2;
+  color: var(--text);
+  border-radius: 16px;
+  padding: 22px;
+  max-width: 480px; width: 92%;
+}
+dialog#settings::backdrop { background: #000c; backdrop-filter: blur(4px); }
+dialog h2 { margin: 0 0 4px; }
+dialog .muted { color: var(--muted); margin-top: 0; }
+dialog label { display: block; margin-top: 12px; font-size: 13px; color: var(--muted); }
+dialog input {
+  width: 100%; margin-top: 4px;
+  padding: 9px 10px;
+  background: #0a1230; border: 1px solid var(--panel-border); border-radius: 8px;
+}
+.dialog-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.dialog-actions button {
+  padding: 9px 16px; border: 0; border-radius: 10px;
+  background: linear-gradient(135deg, #2bd7ff, #7c5cff); color: #07122a; font-weight: 700; cursor: pointer;
+}
+.dialog-actions button.secondary { background: #1a2350; color: var(--text); }
+
+code { background: #0a1230; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
