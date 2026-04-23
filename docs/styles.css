@@ -386,6 +386,14 @@ dialog input {
   padding: 9px 10px;
   background: #0a1230; border: 1px solid var(--panel-border); border-radius: 8px;
 }
+dialog select {
+  width: 100%; margin-top: 4px;
+  padding: 9px 10px;
+  background: #0a1230; border: 1px solid var(--panel-border); border-radius: 8px;
+  color: var(--text);
+}
+dialog .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+dialog input[type="checkbox"] { width: auto; margin-right: 6px; vertical-align: -2px; }
 .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 .dialog-actions button {
   padding: 9px 16px; border: 0; border-radius: 10px;

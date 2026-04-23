@@ -2,7 +2,13 @@ import { Router } from 'express';
 import { Readable } from 'node:stream';
 import { requireApiKey } from './auth.js';
 import { grokChat } from './grok.js';
-import { elevenlabsTTS, contentTypeForFormat } from './elevenlabs.js';
+import {
+  elevenlabsTTS,
+  elevenlabsTTSWithTimestamps,
+  contentTypeForFormat,
+  listModels,
+  listVoices,
+} from './elevenlabs.js';
 import { config } from './config.js';
 
 export const router = Router();
@@ -157,6 +163,94 @@ router.post('/v1/grok-speak', requireApiKey, async (req, res) => {
     await pipeFetchBody(upstream, res);
   } catch (err) {
     req.log?.error({ err }, 'grok-speak failed');
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// --- List ElevenLabs models (for the frontend dropdown) ---
+router.get('/v1/models', requireApiKey, async (req, res) => {
+  try {
+    const data = await listModels();
+    // Filter to text-to-speech capable models and simplify shape.
+    const models = (Array.isArray(data) ? data : data.models || [])
+      .filter((m) => m?.can_do_text_to_speech !== false)
+      .map((m) => ({
+        model_id: m.model_id,
+        name: m.name,
+        description: m.description,
+        languages: (m.languages || []).map((l) => l.language_id || l.name).slice(0, 8),
+      }));
+    res.json({ models });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// --- List ElevenLabs voices on this account ---
+router.get('/v1/voices', requireApiKey, async (req, res) => {
+  try {
+    const data = await listVoices();
+    const voices = (data.voices || []).map((v) => ({
+      voice_id: v.voice_id,
+      name: v.name,
+      category: v.category,
+      labels: v.labels,
+      preview_url: v.preview_url,
+    }));
+    res.json({ voices });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// --- Grok -> ElevenLabs with per-character alignment for precise lip-sync ---
+router.post('/v1/grok-speak-timed', requireApiKey, async (req, res) => {
+  try {
+    const {
+      prompt,
+      messages,
+      system,
+      model,
+      temperature,
+      max_tokens,
+      voiceId,
+      modelId,
+      outputFormat,
+      voiceSettings,
+    } = req.body || {};
+
+    if (!prompt && !(Array.isArray(messages) && messages.length)) {
+      return res.status(400).json({ error: 'Provide `prompt` or `messages`.' });
+    }
+
+    const { text, mood } = await grokChat({
+      prompt,
+      messages,
+      system,
+      model,
+      temperature,
+      maxTokens: max_tokens,
+    });
+    if (!text) return res.status(502).json({ error: 'Grok returned empty response.' });
+
+    const timed = await elevenlabsTTSWithTimestamps({
+      text,
+      voiceId,
+      modelId,
+      outputFormat,
+      voiceSettings,
+    });
+
+    // timed = { audio_base64, alignment, normalized_alignment?, content_type }
+    res.json({
+      text,
+      mood,
+      audio_base64: timed.audio_base64,
+      content_type: timed.content_type,
+      alignment: timed.alignment || timed.normalized_alignment || null,
+    });
+  } catch (err) {
+    req.log?.error({ err }, 'grok-speak-timed failed');
     res.status(err.status || 500).json({ error: err.message });
   }
 });

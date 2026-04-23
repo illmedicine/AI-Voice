@@ -22,8 +22,21 @@
       <label>API key (<code>x-api-key</code>)
         <input id="cfgApiKey" type="password" placeholder="one of MIDDLEWARE_API_KEYS" required />
       </label>
-      <label>Voice ID (optional override)
+
+      <div class="row2">
+        <label>ElevenLabs voice
+          <select id="cfgVoiceSelect"><option value="">(server default)</option></select>
+        </label>
+        <label>ElevenLabs model
+          <select id="cfgModelSelect"><option value="">(server default)</option></select>
+        </label>
+      </div>
+      <label>Voice ID (manual override)
         <input id="cfgVoice" type="text" placeholder="defaults to server ELEVENLABS_VOICE_ID" />
+      </label>
+      <label>
+        <input type="checkbox" id="cfgUseTimed" checked />
+        Use ElevenLabs timestamps for precise lip-sync
       </label>
       <label>Companion name
         <input id="cfgName" type="text" placeholder="Companion" />

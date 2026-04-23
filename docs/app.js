@@ -5,6 +5,8 @@ const LS = {
   endpoint: 'aivoice.endpoint',
   apiKey:   'aivoice.apiKey',
   voiceId:  'aivoice.voiceId',
+  modelId:  'aivoice.modelId',
+  useTimed: 'aivoice.useTimed',
   name:     'aivoice.name',
   history:  'aivoice.history',
   muted:    'aivoice.muted',
@@ -18,6 +20,8 @@ const state = {
   endpoint: localStorage.getItem(LS.endpoint) || '',
   apiKey:   localStorage.getItem(LS.apiKey)   || '',
   voiceId:  localStorage.getItem(LS.voiceId)  || '',
+  modelId:  localStorage.getItem(LS.modelId)  || '',
+  useTimed: localStorage.getItem(LS.useTimed) !== '0',
   name:     localStorage.getItem(LS.name)     || 'Companion',
   muted:    localStorage.getItem(LS.muted) === '1',
   history:  JSON.parse(localStorage.getItem(LS.history) || '[]'),
@@ -37,6 +41,9 @@ const els = {
   cfgEndpoint:  $('cfgEndpoint'),
   cfgApiKey:    $('cfgApiKey'),
   cfgVoice:     $('cfgVoice'),
+  cfgVoiceSelect: $('cfgVoiceSelect'),
+  cfgModelSelect: $('cfgModelSelect'),
+  cfgUseTimed:  $('cfgUseTimed'),
   cfgName:      $('cfgName'),
   testBtn:      $('testBtn'),
   testResult:   $('testResult'),
@@ -130,19 +137,68 @@ function openSettings() {
   els.cfgApiKey.value = state.apiKey;
   els.cfgVoice.value = state.voiceId;
   els.cfgName.value = state.name;
+  els.cfgUseTimed.checked = state.useTimed;
   els.testResult.textContent = '';
   els.dialog.showModal();
+  // Populate voice/model dropdowns if we have creds configured.
+  if (state.endpoint && state.apiKey) {
+    populateVoicesAndModels();
+  }
+}
+
+async function populateVoicesAndModels() {
+  // Voices
+  try {
+    const r = await fetch(state.endpoint + '/v1/voices', {
+      headers: { 'x-api-key': state.apiKey },
+    });
+    if (r.ok) {
+      const { voices } = await r.json();
+      const sel = els.cfgVoiceSelect;
+      sel.innerHTML = '<option value="">(server default)</option>';
+      for (const v of voices) {
+        const o = document.createElement('option');
+        o.value = v.voice_id;
+        const labels = v.labels ? Object.values(v.labels).slice(0, 3).join(', ') : '';
+        o.textContent = `${v.name}${labels ? ' — ' + labels : ''}`;
+        if (v.voice_id === state.voiceId) o.selected = true;
+        sel.appendChild(o);
+      }
+    }
+  } catch {}
+  // Models
+  try {
+    const r = await fetch(state.endpoint + '/v1/models', {
+      headers: { 'x-api-key': state.apiKey },
+    });
+    if (r.ok) {
+      const { models } = await r.json();
+      const sel = els.cfgModelSelect;
+      sel.innerHTML = '<option value="">(server default)</option>';
+      for (const m of models) {
+        const o = document.createElement('option');
+        o.value = m.model_id;
+        o.textContent = `${m.name || m.model_id}`;
+        if (m.model_id === state.modelId) o.selected = true;
+        sel.appendChild(o);
+      }
+    }
+  } catch {}
 }
 
 function saveSettings(e) {
-  // Dialog's native submit will close; we persist values here.
   state.endpoint = els.cfgEndpoint.value.trim().replace(/\/+$/, '');
   state.apiKey   = els.cfgApiKey.value.trim();
-  state.voiceId  = els.cfgVoice.value.trim();
+  // Dropdown takes priority, manual override falls back.
+  state.voiceId  = (els.cfgVoiceSelect.value || els.cfgVoice.value).trim();
+  state.modelId  = els.cfgModelSelect.value.trim();
+  state.useTimed = els.cfgUseTimed.checked;
   state.name     = els.cfgName.value.trim() || 'Companion';
   localStorage.setItem(LS.endpoint, state.endpoint);
   localStorage.setItem(LS.apiKey, state.apiKey);
   localStorage.setItem(LS.voiceId, state.voiceId);
+  localStorage.setItem(LS.modelId, state.modelId);
+  localStorage.setItem(LS.useTimed, state.useTimed ? '1' : '0');
   localStorage.setItem(LS.name, state.name);
   applyName();
   updateConnectionIndicator();
@@ -316,12 +372,15 @@ async function onSend(e) {
   els.messages.scrollTop = els.messages.scrollHeight;
 
   try {
-    const url = state.endpoint +
-      (state.muted ? '/v1/chat' : '/v1/grok-speak?return=json');
+    const path = state.muted
+      ? '/v1/chat'
+      : (state.useTimed ? '/v1/grok-speak-timed' : '/v1/grok-speak?return=json');
+    const url = state.endpoint + path;
 
     const messages = toMessageArray(state.history);
     const body = { messages };
     if (state.voiceId) body.voiceId = state.voiceId;
+    if (state.modelId) body.modelId = state.modelId;
 
     const r = await fetch(url, {
       method: 'POST',
@@ -344,7 +403,7 @@ async function onSend(e) {
 
     if (!state.muted && j.audio_base64) {
       setStage('SPEAKING', 'Now playing voice');
-      await playAudio(j.audio_base64, j.content_type || 'audio/mpeg');
+      await playAudio(j.audio_base64, j.content_type || 'audio/mpeg', j.alignment);
     }
     setStage('ACTIVE', 'Waiting for prompt');
   } catch (err) {
@@ -395,7 +454,7 @@ function ensureAudioCtx() {
   return state.audioCtx;
 }
 
-function playAudio(base64, mime) {
+function playAudio(base64, mime, alignment) {
   return new Promise((resolve) => {
     const bin = atob(base64);
     const bytes = new Uint8Array(bin.length);
@@ -418,7 +477,11 @@ function playAudio(base64, mime) {
     analyser.connect(ctx.destination);
     state.analyser = analyser;
 
-    startLipSync();
+    if (alignment && alignment.characters && alignment.character_start_times_seconds) {
+      startLipSyncAligned(audio, alignment);
+    } else {
+      startLipSync();
+    }
 
     audio.addEventListener('ended', () => {
       URL.revokeObjectURL(url);
@@ -439,6 +502,79 @@ function playAudio(base64, mime) {
 
 let lipRAF = 0;
 let waveRAF = 0;
+
+// Approximate mouth-openness per character. Higher = wider opening.
+// Vowels open most; plosives/stops closed; silence fully closed.
+const VISEME_MAP = {
+  a: 1.0, A: 1.0,
+  e: 0.7, E: 0.7,
+  i: 0.4, I: 0.4, y: 0.45, Y: 0.45,
+  o: 0.9, O: 0.9,
+  u: 0.75, U: 0.75,
+  w: 0.55, W: 0.55,
+  r: 0.35, R: 0.35,
+  l: 0.3,  L: 0.3,
+  n: 0.2,  N: 0.2,
+  m: 0.1,  M: 0.1,
+  b: 0.1,  B: 0.1, p: 0.1, P: 0.1,
+  f: 0.2,  F: 0.2, v: 0.2, V: 0.2,
+  s: 0.25, S: 0.25, z: 0.25, Z: 0.25,
+  t: 0.25, T: 0.25, d: 0.25, D: 0.25,
+  k: 0.3,  K: 0.3,  g: 0.3,  G: 0.3,
+  h: 0.4,  H: 0.4,
+  c: 0.3,  C: 0.3,
+  j: 0.3,  J: 0.3,
+  x: 0.3,  X: 0.3,
+  q: 0.35, Q: 0.35,
+  ' ': 0, '.': 0, ',': 0, '!': 0, '?': 0, ';': 0, ':': 0, '"': 0, "'": 0,
+  '\n': 0, '\t': 0,
+};
+
+function startLipSyncAligned(audioEl, alignment) {
+  stopLipSync();
+  const chars = alignment.characters;
+  const starts = alignment.character_start_times_seconds;
+  const ends = alignment.character_end_times_seconds;
+  if (!chars || !starts || !ends) { startLipSync(); return; }
+
+  // Smoothed current value so the mouth doesn't jitter.
+  let current = 0;
+
+  const loop = () => {
+    const t = audioEl.currentTime;
+    // Binary search for the active char (indices are ordered by start time).
+    let lo = 0, hi = chars.length - 1, idx = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (starts[mid] <= t && t <= ends[mid]) { idx = mid; break; }
+      if (t < starts[mid]) hi = mid - 1; else lo = mid + 1;
+    }
+
+    let target = 0;
+    if (idx >= 0) {
+      const ch = chars[idx];
+      const base = VISEME_MAP[ch];
+      target = base === undefined ? 0.35 : base;
+
+      // Progress 0..1 through the current character; shape it with a small
+      // bell so each phoneme has a rise-and-fall, not a flat held open mouth.
+      const dur = Math.max(0.001, ends[idx] - starts[idx]);
+      const p = Math.min(1, Math.max(0, (t - starts[idx]) / dur));
+      const bell = 1 - Math.abs(2 * p - 1);       // triangle 0..1..0
+      target *= 0.55 + 0.45 * bell;
+    }
+
+    // Low-pass smoothing
+    current += (target - current) * 0.35;
+    const v = current.toFixed(3);
+    els.mouth.style.setProperty('--mouth', v);
+    els.avatarJaw.style.setProperty('--mouth', v);
+
+    lipRAF = requestAnimationFrame(loop);
+  };
+  lipRAF = requestAnimationFrame(loop);
+  startWaveform();
+}
 
 function startLipSync() {
   stopLipSync();
