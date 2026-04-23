@@ -30,6 +30,29 @@ const DEFAULTS = {
   modelId:  'eleven_flash_v2_5',
 };
 
+// Heal bad saved values (placeholders, example URLs, empty strings) by
+// reverting them to DEFAULTS. Runs every boot so old clients self-repair.
+(function healSavedConfig() {
+  const ep = (localStorage.getItem(LS.endpoint) || '').trim();
+  const badEp = !ep
+    || /your-service\.up\.railway\.app/i.test(ep)
+    || /example\.com/i.test(ep)
+    || /localhost|127\.0\.0\.1/i.test(ep)
+    || !/^https?:\/\//i.test(ep);
+  if (badEp) localStorage.setItem(LS.endpoint, DEFAULTS.endpoint);
+
+  const key = (localStorage.getItem(LS.apiKey) || '').trim();
+  if (!key || key === 'your-key' || key.length < 16) {
+    localStorage.setItem(LS.apiKey, DEFAULTS.apiKey);
+  }
+
+  const vid = (localStorage.getItem(LS.voiceId) || '').trim();
+  if (!vid) localStorage.setItem(LS.voiceId, DEFAULTS.voiceId);
+
+  const mid = (localStorage.getItem(LS.modelId) || '').trim();
+  if (!mid) localStorage.setItem(LS.modelId, DEFAULTS.modelId);
+})();
+
 // ---------- State ----------
 const state = {
   endpoint: localStorage.getItem(LS.endpoint) || DEFAULTS.endpoint,
