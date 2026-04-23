@@ -24,7 +24,7 @@ const state = {
   endpoint: localStorage.getItem(LS.endpoint) || '',
   apiKey:   localStorage.getItem(LS.apiKey)   || '',
   voiceId:  localStorage.getItem(LS.voiceId)  || '',
-  modelId:  localStorage.getItem(LS.modelId)  || '',
+  modelId:  localStorage.getItem(LS.modelId)  || 'eleven_flash_v2_5',
   useTimed: localStorage.getItem(LS.useTimed) !== '0',
   name:     localStorage.getItem(LS.name)     || 'Companion',
   muted:    localStorage.getItem(LS.muted) === '1',
@@ -40,7 +40,9 @@ const state = {
 
   // Voice input / wake word state
   recognizer: null,
-  listening: false,          // SpeechRecognition session active
+  listening: false,          // user wants mic on (persists across pauses)
+  recognizerRunning: false,  // whether the recognizer is currently active
+  pausedForPlayback: false,  // true while we've muted the mic for her voice
   listenMode: 'off',         // 'off' | 'awake' | 'asleep' | 'speaking'
   wakePhrase:  (localStorage.getItem(LS.wake)  || 'wake up jayla').toLowerCase(),
   sleepPhrase: (localStorage.getItem(LS.sleep) || 'jayla sleep time').toLowerCase(),
@@ -516,12 +518,10 @@ async function onSend(e) {
 
     if (!state.muted && j.audio_base64) {
       setStage('SPEAKING', 'Now playing voice');
-      setListenMode('speaking');
+      // playAudio handles pausing/resuming the mic + chip state.
       await playAudio(j.audio_base64, j.content_type || 'audio/mpeg', j.alignment);
     }
     setStage('ACTIVE', 'Waiting for prompt');
-    // Return to wake-word listening if we were in a voice session.
-    if (state.listening) setListenMode('awake');
   } catch (err) {
     typingEl.remove();
     setStage('ERROR', 'Check settings or middleware');
@@ -608,6 +608,10 @@ function playAudio(base64, mime, alignment) {
     audio.preload = 'auto';
     state.currentAudio = audio;
 
+    // Pause the mic while she's speaking so the speaker feedback doesn't
+    // get transcribed into the chat box. Restart it after playback ends.
+    pauseRecognizerForPlayback();
+
     const ctx = ensureAudioCtx();
     if (ctx.state === 'suspended') ctx.resume();
     const source = ctx.createMediaElementSource(audio);
@@ -631,16 +635,18 @@ function playAudio(base64, mime, alignment) {
       URL.revokeObjectURL(url);
       stopLipSync();
       state.currentAudio = null;
+      // Resume mic after her voice stops so the user can speak again.
+      resumeRecognizerAfterPlayback();
       resolve();
     };
     audio.addEventListener('ended', finish);
     audio.addEventListener('error', finish);
-    // Interrupt (e.g. "jayla stop") triggers pause; resolve so onSend continues.
+    // Interrupt (e.g. tap 🎙 or "jayla stop") triggers pause; resolve so onSend continues.
     audio.addEventListener('pause', () => {
       if (!audio.ended && audio.currentTime > 0) finish();
     });
 
-    audio.play().catch(() => { stopLipSync(); resolve(); });
+    audio.play().catch(() => { stopLipSync(); resumeRecognizerAfterPlayback(); resolve(); });
   });
 }
 
@@ -803,8 +809,45 @@ function getSpeechRecognition() {
 }
 
 function toggleListening() {
+  // If she is mid-sentence, tap = interrupt. Keeps the mic state unchanged.
+  if (state.currentAudio) {
+    interruptSpeaking();
+    return;
+  }
   if (state.listening) stopListening();
   else startListening();
+}
+
+// Mute the mic while TTS audio plays so the speaker feedback loop doesn't
+// transcribe her own voice into the chat box.
+function pauseRecognizerForPlayback() {
+  state.pausedForPlayback = true;
+  setListenMode('speaking');
+  if (state.silenceTimer) { clearTimeout(state.silenceTimer); state.silenceTimer = null; }
+  state.pendingTranscript = '';
+  const rec = state.recognizer;
+  if (rec && state.recognizerRunning) {
+    try { rec.abort ? rec.abort() : rec.stop(); } catch {}
+  }
+}
+
+function resumeRecognizerAfterPlayback() {
+  state.pausedForPlayback = false;
+  if (!state.listening) { setListenMode('off'); return; }
+  setListenMode('awake');
+  const rec = state.recognizer;
+  if (rec && !state.recognizerRunning) {
+    // Small delay so the audio element fully tears down.
+    setTimeout(() => {
+      if (!state.listening || state.pausedForPlayback) return;
+      try { rec.start(); }
+      catch {
+        // Recognizer got into a bad state — rebuild it.
+        state.recognizer = null;
+        startListening();
+      }
+    }, 300);
+  }
 }
 
 function startListening() {
@@ -876,10 +919,13 @@ function startListening() {
 
   rec.onend = () => {
     state.recognizerRunning = false;
+    // Don't auto-restart while she's talking — that would recapture her voice.
+    if (state.pausedForPlayback) return;
     // Chrome ends the session periodically; auto-restart while still listening.
     if (state.listening) {
       // Small delay avoids InvalidStateError on fast restart.
       setTimeout(() => {
+        if (state.pausedForPlayback || !state.listening) return;
         try { rec.start(); }
         catch (err) {
           console.warn('restart failed', err);
@@ -951,6 +997,9 @@ function phraseMatch(haystack, needle) {
 }
 
 function onRecognitionResult(event) {
+  // Safety: if she's mid-speech, drop anything the mic somehow captured.
+  if (state.pausedForPlayback || state.currentAudio) return;
+
   // Build the newest final transcript and the latest interim.
   let finalText = '';
   let interimText = '';
@@ -1022,7 +1071,8 @@ function onRecognitionResult(event) {
   armSilenceTimer(wake);
 }
 
-// Fires the pending transcript after ~1.4 s of no new speech.
+// Fires the pending transcript after a pause with no new speech.
+// Shorter = snappier turn-taking, longer = more patient with slow speakers.
 function armSilenceTimer(wake) {
   if (state.silenceTimer) clearTimeout(state.silenceTimer);
   state.silenceTimer = setTimeout(() => {
@@ -1030,7 +1080,7 @@ function armSilenceTimer(wake) {
     const text = cleanPendingTranscript(state.pendingTranscript, wake);
     state.pendingTranscript = '';
     if (text && !state.busy) submitVoiceText(text);
-  }, 1400);
+  }, 900);
 }
 
 function setHeard(text) {
