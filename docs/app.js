@@ -66,6 +66,7 @@ const els = {
   cfgAutoListen:$('cfgAutoListen'),
   testBtn:      $('testBtn'),
   testResult:   $('testResult'),
+  shareBtn:     $('shareBtn'),
   settingsForm: $('settingsForm'),
 
   settingsBtn:  $('settingsBtn'),
@@ -113,6 +114,7 @@ function boot() {
   els.input.addEventListener('keydown', onInputKey);
   els.input.addEventListener('input', autoGrow);
   els.testBtn.addEventListener('click', testConnection);
+  els.shareBtn.addEventListener('click', copyPhoneSetupLink);
   els.settingsForm.addEventListener('submit', saveSettings);
   els.calibBtn.addEventListener('click', startCalibration);
   els.calibCancelBtn.addEventListener('click', cancelCalibration);
@@ -133,6 +135,9 @@ function boot() {
   updateConnectionIndicator();
   setStage(state.endpoint && state.apiKey ? 'ACTIVE' : 'INITIALIZING',
            state.endpoint && state.apiKey ? 'Waiting for prompt' : 'Tap settings to begin');
+
+  // Consume ?setup= / #setup= from the URL for easy phone provisioning.
+  consumeSetupHash();
 
   if (!state.endpoint || !state.apiKey) openSettings();
 
@@ -250,9 +255,17 @@ function saveSettings(e) {
 async function testConnection() {
   const ep = els.cfgEndpoint.value.trim().replace(/\/+$/, '');
   if (!ep) { els.testResult.textContent = 'Enter a URL first.'; return; }
-  els.testResult.textContent = 'Pinging…';
+  if (!/^https?:\/\//i.test(ep)) {
+    els.testResult.textContent = 'URL must start with https:// (or http:// for local).';
+    return;
+  }
+  if (location.protocol === 'https:' && ep.startsWith('http://')) {
+    els.testResult.textContent = 'Mixed content: this page is HTTPS so the middleware URL must be https:// too.';
+    return;
+  }
+  els.testResult.textContent = 'Pinging ' + ep + '/health …';
   try {
-    const r = await fetch(ep + '/health');
+    const r = await fetch(ep + '/health', { mode: 'cors' });
     const j = await r.json();
     if (r.ok && j.ok) {
       els.testResult.textContent =
@@ -261,7 +274,9 @@ async function testConnection() {
       els.testResult.textContent = 'Reachable but unhealthy: ' + JSON.stringify(j);
     }
   } catch (e) {
-    els.testResult.textContent = 'Failed: ' + e.message;
+    els.testResult.textContent =
+      'Failed: ' + (e.message || e) +
+      '  — check that the URL is exactly your Railway https URL and that the phone has internet.';
   }
 }
 
@@ -269,6 +284,60 @@ function updateConnectionIndicator() {
   const ok = Boolean(state.endpoint && state.apiKey);
   els.connDot.classList.toggle('ok', ok);
   els.connDot.title = ok ? 'Configured' : 'Not configured';
+}
+
+// ---------- Phone setup helper ----------
+// Encode current endpoint + key into a share link: <page>#setup=<base64-json>.
+// Open that link on your phone once and settings auto-populate.
+function copyPhoneSetupLink() {
+  const ep  = els.cfgEndpoint.value.trim().replace(/\/+$/, '');
+  const key = els.cfgApiKey.value.trim();
+  if (!ep || !key) {
+    els.testResult.textContent = 'Fill URL + API key first, then tap again.';
+    return;
+  }
+  const payload = { ep, key, v: (els.cfgVoiceSelect.value || '').trim(), m: (els.cfgModelSelect.value || '').trim() };
+  const token = btoa(unescape(encodeURIComponent(JSON.stringify(payload))))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const link = location.origin + location.pathname + '#setup=' + token;
+  const done = (msg) => { els.testResult.textContent = msg; };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(link).then(
+      () => done('Copied! Open this link on your phone.'),
+      () => { window.prompt('Copy this link for your phone:', link); done('Link ready.'); }
+    );
+  } else {
+    window.prompt('Copy this link for your phone:', link);
+    done('Link ready.');
+  }
+}
+
+function consumeSetupHash() {
+  const hash = location.hash.replace(/^#/, '');
+  const query = location.search.replace(/^\?/, '');
+  const parts = (hash + '&' + query).split('&').filter(Boolean);
+  let token = '';
+  for (const p of parts) {
+    const [k, v] = p.split('=');
+    if (k === 'setup' && v) { token = v; break; }
+  }
+  if (!token) return;
+  try {
+    const json = decodeURIComponent(escape(atob(
+      token.replace(/-/g, '+').replace(/_/g, '/')
+    )));
+    const data = JSON.parse(json);
+    if (data.ep)  { state.endpoint = data.ep; localStorage.setItem(LS.endpoint, data.ep); }
+    if (data.key) { state.apiKey   = data.key; localStorage.setItem(LS.apiKey, data.key); }
+    if (data.v)   { state.voiceId  = data.v;  localStorage.setItem(LS.voiceId, data.v); }
+    if (data.m)   { state.modelId  = data.m;  localStorage.setItem(LS.modelId, data.m); }
+    // Scrub so the creds don't linger in history.
+    history.replaceState(null, '', location.origin + location.pathname);
+    updateConnectionIndicator();
+    setStage('ACTIVE', 'Phone setup loaded — ready');
+  } catch (e) {
+    console.warn('Bad setup token:', e);
+  }
 }
 
 // ---------- Mouth calibration ----------
@@ -428,6 +497,8 @@ async function onSend(e) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': state.apiKey },
       body: JSON.stringify(body),
+    }).catch((err) => {
+      throw new Error(describeFetchError(err, url));
     });
     if (!r.ok) throw new Error(await extractErr(r));
     const j = await r.json();
@@ -477,6 +548,31 @@ function toMessageArray(history) {
 async function extractErr(res) {
   try { const j = await res.json(); return j.error || JSON.stringify(j); }
   catch { return (await res.text().catch(() => '')) || `HTTP ${res.status}`; }
+}
+
+// Turn a cryptic "Failed to fetch" into actionable guidance.
+function describeFetchError(err, url) {
+  const base = (err && err.message) ? err.message : String(err);
+  const hints = [];
+  if (!state.endpoint) {
+    hints.push('No middleware URL set — open Settings and paste your Railway https URL.');
+  }
+  if (!state.apiKey) {
+    hints.push('No API key set — open Settings and paste your middleware API key.');
+  }
+  try {
+    const u = new URL(url);
+    if (location.protocol === 'https:' && u.protocol === 'http:') {
+      hints.push('Mixed content: this page is HTTPS but the middleware URL is http://. Use the https:// Railway URL.');
+    }
+  } catch {
+    hints.push('Middleware URL looks invalid — must be like https://your-app.up.railway.app');
+  }
+  if (!navigator.onLine) hints.push('Device reports it is offline.');
+  if (hints.length === 0) {
+    hints.push('Likely causes: wrong URL, middleware is asleep, or CORS blocked. Tap Settings → Test to verify /health.');
+  }
+  return base + ' — ' + hints.join(' ');
 }
 
 // ---------- Stage / mood helpers ----------
@@ -714,7 +810,11 @@ function toggleListening() {
 function startListening() {
   const SR = getSpeechRecognition();
   if (!SR) {
-    alert('Voice input is not supported in this browser. Try Chrome or Edge on desktop or Android.');
+    alert(
+      'Voice input is not supported in this browser.\n\n' +
+      'Works in: desktop Chrome/Edge, Android Chrome.\n' +
+      'Does NOT work in: iOS Safari, Firefox, most in-app browsers.'
+    );
     return;
   }
   if (!window.isSecureContext) {
@@ -723,12 +823,14 @@ function startListening() {
   }
   if (state.recognizer) { try { state.recognizer.stop(); } catch {} state.recognizer = null; }
 
+  setHeard('requesting mic permission…');
+  setListenMode('wake');
+
   // Proactively prompt the OS mic permission via getUserMedia so the user sees
   // the permission dialog even if Web Speech fails to surface one.
   const ensureMic = navigator.mediaDevices && navigator.mediaDevices.getUserMedia
     ? navigator.mediaDevices.getUserMedia({ audio: true })
         .then((s) => { s.getTracks().forEach((t) => t.stop()); })
-        .catch((err) => { throw err; })
     : Promise.resolve();
 
   ensureMic.then(() => {
@@ -747,18 +849,26 @@ function startListening() {
       setHeard('mic open — say something');
     };
 
+    rec.onaudiostart  = () => setHeard('hearing audio…');
+    rec.onspeechstart = () => setHeard('speech detected…');
+    rec.onnomatch     = () => setHeard('heard something but couldn\u2019t transcribe');
+
     rec.onerror = (e) => {
       console.warn('Speech recognition error:', e.error, e);
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        alert('Microphone permission was denied. Click the \ud83d\udd12 icon in the address bar, allow the mic for this site, then tap \ud83c\udf99 again.');
         state.listening = false;
         setListenMode('off');
+        alert('Microphone permission was denied. Tap the \ud83d\udd12/\u24d8 icon in the address bar, set Microphone = Allow, then reload and tap \ud83c\udf99.');
       } else if (e.error === 'audio-capture') {
-        alert('No microphone detected. Check that a mic is connected and selected as the default input.');
         state.listening = false;
         setListenMode('off');
+        alert('No microphone detected. Check that a mic is connected and selected as the default input.');
       } else if (e.error === 'network') {
-        setHeard('network error — retrying');
+        setHeard('network error — will retry');
+      } else if (e.error === 'language-not-supported') {
+        setHeard('language en-US not supported on this device');
+      } else {
+        setHeard('mic error: ' + e.error);
       }
     };
 
@@ -785,7 +895,7 @@ function startListening() {
     console.warn('Mic permission rejected:', err);
     const name = err && err.name;
     if (name === 'NotAllowedError' || name === 'SecurityError') {
-      alert('Microphone permission was denied. Click the \ud83d\udd12 icon in the address bar, allow the mic for this site, then tap \ud83c\udf99 again.');
+      alert('Microphone permission was denied. Tap the \ud83d\udd12/\u24d8 icon in the address bar, set Microphone = Allow, then reload and tap \ud83c\udf99.');
     } else if (name === 'NotFoundError' || name === 'OverconstrainedError') {
       alert('No microphone detected. Plug one in or check your system input device.');
     } else {
