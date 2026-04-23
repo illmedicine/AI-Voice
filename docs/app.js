@@ -823,86 +823,97 @@ function startListening() {
   }
   if (state.recognizer) { try { state.recognizer.stop(); } catch {} state.recognizer = null; }
 
-  setHeard('requesting mic permission…');
+  // CRITICAL: rec.start() MUST run synchronously inside the click handler so
+  // the user-gesture activation is preserved. Do NOT wrap this in a
+  // getUserMedia().then(...) — that breaks the gesture window on some
+  // Chrome versions and silently refuses mic permission.
+  const rec = new SR();
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.lang = 'en-US';
+  rec.maxAlternatives = 1;
+
+  rec.onstart = () => {
+    state.listening = true;
+    state.recognizerRunning = true;
+    els.micBtn.setAttribute('aria-pressed', 'true');
+    els.micBtn.classList.remove('hint');
+    setListenMode(state.listenMode === 'awake' ? 'awake' : 'wake');
+    setHeard('mic open — say something');
+  };
+
+  rec.onaudiostart  = () => setHeard('hearing audio…');
+  rec.onspeechstart = () => setHeard('speech detected…');
+  rec.onsoundstart  = () => { /* low-level sound detected */ };
+  rec.onnomatch     = () => setHeard('heard something but couldn\u2019t transcribe');
+
+  rec.onerror = (e) => {
+    console.warn('Speech recognition error:', e.error, e);
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      state.listening = false;
+      setListenMode('off');
+      alert('Microphone permission was denied.\n\n' +
+        'Android Chrome: tap \u22ee \u2192 Site settings \u2192 Microphone \u2192 Allow, then reload and tap \ud83c\udf99.\n' +
+        'Desktop Chrome: click the \ud83d\udd12 in the address bar \u2192 Microphone \u2192 Allow, then reload.');
+    } else if (e.error === 'audio-capture') {
+      state.listening = false;
+      setListenMode('off');
+      alert('No microphone detected. Check that a mic is connected and selected as the default input.');
+    } else if (e.error === 'network') {
+      // Speech recognition in Chrome uses Google servers — a network hiccup
+      // stops the session. We'll auto-restart via onend.
+      setHeard('network error \u2014 will retry');
+    } else if (e.error === 'language-not-supported') {
+      setHeard('language en-US not supported on this device');
+    } else if (e.error === 'no-speech') {
+      setHeard('no speech heard \u2014 keep talking');
+    } else if (e.error === 'aborted') {
+      // Benign; usually from a manual stop or a restart.
+    } else {
+      setHeard('mic error: ' + e.error);
+    }
+  };
+
+  rec.onend = () => {
+    state.recognizerRunning = false;
+    // Chrome ends the session periodically; auto-restart while still listening.
+    if (state.listening) {
+      // Small delay avoids InvalidStateError on fast restart.
+      setTimeout(() => {
+        try { rec.start(); }
+        catch (err) {
+          console.warn('restart failed', err);
+          // If the recognizer is unusable, build a fresh one next tick.
+          state.recognizer = null;
+          if (state.listening) setTimeout(() => { if (state.listening) startListening(); }, 300);
+        }
+      }, 200);
+    } else {
+      setListenMode('off');
+    }
+  };
+
+  rec.onresult = onRecognitionResult;
+
+  state.recognizer = rec;
+  setHeard('starting mic…');
   setListenMode('wake');
 
-  // Proactively prompt the OS mic permission via getUserMedia so the user sees
-  // the permission dialog even if Web Speech fails to surface one.
-  const ensureMic = navigator.mediaDevices && navigator.mediaDevices.getUserMedia
-    ? navigator.mediaDevices.getUserMedia({ audio: true })
-        .then((s) => { s.getTracks().forEach((t) => t.stop()); })
-    : Promise.resolve();
-
-  ensureMic.then(() => {
-    const rec = new SR();
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.lang = 'en-US';
-    rec.maxAlternatives = 1;
-
-    rec.onstart = () => {
-      state.listening = true;
-      state.recognizerRunning = true;
-      els.micBtn.setAttribute('aria-pressed', 'true');
-      els.micBtn.classList.remove('hint');
-      setListenMode(state.listenMode === 'awake' ? 'awake' : 'wake');
-      setHeard('mic open — say something');
-    };
-
-    rec.onaudiostart  = () => setHeard('hearing audio…');
-    rec.onspeechstart = () => setHeard('speech detected…');
-    rec.onnomatch     = () => setHeard('heard something but couldn\u2019t transcribe');
-
-    rec.onerror = (e) => {
-      console.warn('Speech recognition error:', e.error, e);
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        state.listening = false;
-        setListenMode('off');
-        alert('Microphone permission was denied. Tap the \ud83d\udd12/\u24d8 icon in the address bar, set Microphone = Allow, then reload and tap \ud83c\udf99.');
-      } else if (e.error === 'audio-capture') {
-        state.listening = false;
-        setListenMode('off');
-        alert('No microphone detected. Check that a mic is connected and selected as the default input.');
-      } else if (e.error === 'network') {
-        setHeard('network error — will retry');
-      } else if (e.error === 'language-not-supported') {
-        setHeard('language en-US not supported on this device');
-      } else {
-        setHeard('mic error: ' + e.error);
-      }
-    };
-
-    rec.onend = () => {
-      state.recognizerRunning = false;
-      // Chrome ends the session every ~60s of silence; auto-restart while listening.
-      if (state.listening) {
-        try { rec.start(); } catch { setTimeout(() => { try { rec.start(); } catch {} }, 250); }
-      } else {
-        setListenMode('off');
-      }
-    };
-
-    rec.onresult = onRecognitionResult;
-
-    state.recognizer = rec;
-    try {
-      rec.start();
-    } catch (err) {
-      console.warn('Could not start recognizer:', err);
-      alert('Could not start voice recognition: ' + (err && err.message ? err.message : err));
-    }
-  }).catch((err) => {
-    console.warn('Mic permission rejected:', err);
-    const name = err && err.name;
-    if (name === 'NotAllowedError' || name === 'SecurityError') {
-      alert('Microphone permission was denied. Tap the \ud83d\udd12/\u24d8 icon in the address bar, set Microphone = Allow, then reload and tap \ud83c\udf99.');
-    } else if (name === 'NotFoundError' || name === 'OverconstrainedError') {
-      alert('No microphone detected. Plug one in or check your system input device.');
+  try {
+    rec.start();
+  } catch (err) {
+    console.warn('Could not start recognizer:', err);
+    // InvalidStateError means a previous session is still alive. Flush + retry.
+    if (err && err.name === 'InvalidStateError') {
+      setTimeout(() => {
+        try { rec.start(); }
+        catch (err2) { alert('Could not start voice recognition: ' + (err2.message || err2)); }
+      }, 250);
     } else {
-      alert('Could not access microphone: ' + (err && err.message ? err.message : err));
+      alert('Could not start voice recognition: ' + (err && err.message ? err.message : err));
+      setListenMode('off');
     }
-    setListenMode('off');
-  });
+  }
 }
 
 function stopListening() {
