@@ -8,6 +8,7 @@ const LS = {
   name:     'aivoice.name',
   history:  'aivoice.history',
   muted:    'aivoice.muted',
+  mouth:    'aivoice.mouth', // {x,y,w,h} in %
 };
 
 const $ = (id) => document.getElementById(id);
@@ -20,11 +21,14 @@ const state = {
   name:     localStorage.getItem(LS.name)     || 'Companion',
   muted:    localStorage.getItem(LS.muted) === '1',
   history:  JSON.parse(localStorage.getItem(LS.history) || '[]'),
+  mouth:    JSON.parse(localStorage.getItem(LS.mouth) || 'null') ||
+            { x: 50, y: 72, w: 12, h: 5 }, // sensible default for a centered portrait
   busy: false,
   audioCtx: null,
   analyser: null,
   currentAudio: null,
   mood: 'neutral',
+  calibrating: false,
 };
 
 // ---------- DOM ----------
@@ -54,6 +58,11 @@ const els = {
   blink:        $('blink'),
   mouth:        $('mouth'),
   waveform:     $('waveform'),
+  avatarJaw:    $('avatarJaw'),
+  calibMarker:  $('calibMarker'),
+  calibHint:    $('calibHint'),
+  calibBtn:     $('calibBtn'),
+  calibCancelBtn: $('calibCancelBtn'),
 };
 
 // ---------- Boot ----------
@@ -74,6 +83,11 @@ function boot() {
   els.input.addEventListener('input', autoGrow);
   els.testBtn.addEventListener('click', testConnection);
   els.settingsForm.addEventListener('submit', saveSettings);
+  els.calibBtn.addEventListener('click', startCalibration);
+  els.calibCancelBtn.addEventListener('click', cancelCalibration);
+  els.portrait.addEventListener('click', onPortraitClick);
+
+  applyMouthCalibration();
 
   // Blink loop
   setInterval(() => {
@@ -157,6 +171,80 @@ function updateConnectionIndicator() {
   const ok = Boolean(state.endpoint && state.apiKey);
   els.connDot.classList.toggle('ok', ok);
   els.connDot.title = ok ? 'Configured' : 'Not configured';
+}
+
+// ---------- Mouth calibration ----------
+function applyMouthCalibration() {
+  const { x, y, w, h } = state.mouth;
+  // Position the animated mouth overlay.
+  els.mouth.style.left = x + '%';
+  els.mouth.style.top  = y + '%';
+  els.mouth.style.width  = w + '%';
+  els.mouth.style.height = h + '%';
+  // Position the jaw clip so only the lower face moves.
+  // Clip top ≈ a bit above the mouth, extending to bottom of portrait.
+  const clipTop = Math.max(0, Math.min(95, y - h * 0.8));
+  els.avatarJaw.style.setProperty('--mouth-y', clipTop + '%');
+  els.avatarJaw.style.setProperty('--mouth-h', (100 - clipTop) + '%');
+  // Calibration marker mirror
+  els.calibMarker.style.left = x + '%';
+  els.calibMarker.style.top  = y + '%';
+  els.calibMarker.style.width  = w + '%';
+  els.calibMarker.style.height = h + '%';
+}
+
+function startCalibration() {
+  els.dialog.close();
+  state.calibrating = true;
+  els.portrait.classList.add('calibrating');
+  els.calibHint.hidden = false;
+  setStage('CALIBRATING', 'Click on her mouth');
+}
+
+function cancelCalibration() {
+  state.calibrating = false;
+  els.portrait.classList.remove('calibrating');
+  els.calibHint.hidden = true;
+  setStage('ACTIVE', 'Waiting for prompt');
+  openSettings();
+}
+
+function onPortraitClick(e) {
+  if (!state.calibrating) return;
+  const rect = els.portrait.getBoundingClientRect();
+  const x = ((e.clientX - rect.left) / rect.width) * 100;
+  const y = ((e.clientY - rect.top) / rect.height) * 100;
+  // Keep whatever size was set last (default 12x5). User can re-size in settings later.
+  state.mouth = {
+    x: Math.round(x * 10) / 10,
+    y: Math.round(y * 10) / 10,
+    w: state.mouth.w || 12,
+    h: state.mouth.h || 5,
+  };
+  localStorage.setItem(LS.mouth, JSON.stringify(state.mouth));
+  applyMouthCalibration();
+  state.calibrating = false;
+  els.portrait.classList.remove('calibrating');
+  els.calibHint.hidden = true;
+  // Play a short demo wiggle so user sees the result immediately.
+  demoMouth();
+  setStage('ACTIVE', 'Mouth calibrated');
+  openSettings();
+}
+
+function demoMouth() {
+  let t = 0;
+  const id = setInterval(() => {
+    t += 1;
+    const v = Math.abs(Math.sin(t / 2)) * (t < 12 ? 1 : 0);
+    els.mouth.style.setProperty('--mouth', v.toFixed(3));
+    els.avatarJaw.style.setProperty('--mouth', v.toFixed(3));
+    if (t > 16) {
+      clearInterval(id);
+      els.mouth.style.setProperty('--mouth', '0');
+      els.avatarJaw.style.setProperty('--mouth', '0');
+    }
+  }, 80);
 }
 
 // ---------- Chat ----------
@@ -365,8 +453,10 @@ function startLipSync() {
     let sum = 0;
     for (let i = 1; i < 14; i++) sum += data[i];
     const avg = sum / 13 / 255;                  // 0..1
-    const level = Math.min(1, Math.max(0, avg * 1.8)); // gentle gain
-    els.mouth.style.setProperty('--mouth', level.toFixed(3));
+    const level = Math.min(1, Math.max(0, avg * 2.2)); // gentle gain
+    const lvlStr = level.toFixed(3);
+    els.mouth.style.setProperty('--mouth', lvlStr);
+    els.avatarJaw.style.setProperty('--mouth', lvlStr);
     lipRAF = requestAnimationFrame(loop);
   };
   lipRAF = requestAnimationFrame(loop);
@@ -377,6 +467,7 @@ function stopLipSync() {
   if (lipRAF) cancelAnimationFrame(lipRAF);
   lipRAF = 0;
   els.mouth.style.setProperty('--mouth', '0');
+  els.avatarJaw.style.setProperty('--mouth', '0');
   stopWaveform();
 }
 
