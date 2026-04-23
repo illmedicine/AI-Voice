@@ -406,7 +406,8 @@ dialog label.inline { display: flex; align-items: center; gap: 4px; margin-top: 
 
 /* Mic button states */
 #micBtn.hint      { color: var(--accent); border-color: var(--accent); animation: micPulse 1.6s ease-in-out infinite; }
-#micBtn.listening { color: var(--accent); border-color: var(--accent); }
+#micBtn.listening { color: var(--muted);  border-color: var(--muted);  opacity: .85; }
+#micBtn.asleep    { color: var(--muted);  border-color: var(--muted);  opacity: .75; }
 #micBtn.awake     { color: #ffe26b;  border-color: #ffe26b; animation: micPulse 1.4s ease-in-out infinite; }
 #micBtn.speaking  { color: #ff7ad9;  border-color: #ff7ad9; }
 @keyframes micPulse {
@@ -431,6 +432,7 @@ dialog label.inline { display: flex; align-items: center; gap: 4px; margin-top: 
 }
 #listenChip.on   { display: inline-flex; color: var(--accent); border-color: var(--accent); }
 #listenChip.awake { color: #ffe26b; border-color: #ffe26b; }
+#listenChip.asleep { color: var(--muted); border-color: var(--panel-border); opacity: .75; }
 #listenChip.speaking { display: inline-flex; color: #ff8fb6; border-color: #ff8fb6; }
 #listenChip .heard {
   flex-basis: 100%;

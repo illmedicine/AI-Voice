@@ -41,7 +41,7 @@ const state = {
   // Voice input / wake word state
   recognizer: null,
   listening: false,          // SpeechRecognition session active
-  listenMode: 'off',         // 'off' | 'wake' | 'awake' | 'speaking'
+  listenMode: 'off',         // 'off' | 'awake' | 'asleep' | 'speaking'
   wakePhrase:  (localStorage.getItem(LS.wake)  || 'wake up jayla').toLowerCase(),
   sleepPhrase: (localStorage.getItem(LS.sleep) || 'jayla sleep time').toLowerCase(),
   stopPhrase:  (localStorage.getItem(LS.stopWord) || 'jayla stop').toLowerCase(),
@@ -521,7 +521,7 @@ async function onSend(e) {
     }
     setStage('ACTIVE', 'Waiting for prompt');
     // Return to wake-word listening if we were in a voice session.
-    if (state.listening) setListenMode('wake');
+    if (state.listening) setListenMode('awake');
   } catch (err) {
     typingEl.remove();
     setStage('ERROR', 'Check settings or middleware');
@@ -838,7 +838,7 @@ function startListening() {
     state.recognizerRunning = true;
     els.micBtn.setAttribute('aria-pressed', 'true');
     els.micBtn.classList.remove('hint');
-    setListenMode(state.listenMode === 'awake' ? 'awake' : 'wake');
+    setListenMode(state.listenMode === 'asleep' ? 'asleep' : 'awake');
     setHeard('mic open — say something');
   };
 
@@ -897,7 +897,7 @@ function startListening() {
 
   state.recognizer = rec;
   setHeard('starting mic…');
-  setListenMode('wake');
+  setListenMode('awake');
 
   try {
     rec.start();
@@ -965,79 +965,72 @@ function onRecognitionResult(event) {
 
   // Always echo what the mic is hearing so the user can tell it's working.
   setHeard(heardRaw);
-  // Also mirror into the composer at ALL times so the user can SEE mic works,
-  // even before the wake phrase matches.
-  if (state.listenMode !== 'awake' && state.listenMode !== 'speaking') {
-    els.input.value = heardRaw;
-    autoGrow();
-  }
 
   const wake  = normalizePhrase(state.wakePhrase);
   const sleep = normalizePhrase(state.sleepPhrase);
   const stop  = normalizePhrase(state.stopPhrase);
 
-  // Stop/sleep phrase always interrupts her speech immediately.
+  // While she's talking, sleep/stop phrases interrupt her.
   if (state.listenMode === 'speaking') {
     if (phraseMatch(heard, stop) || phraseMatch(heard, sleep)) {
       interruptSpeaking();
-      setListenMode('wake');
+      setListenMode('awake');
     }
     return;
   }
 
-  if (state.listenMode === 'wake' || state.listenMode === 'off') {
+  // If the user previously said the sleep phrase, the mic still listens but
+  // every utterance is ignored until the wake phrase is heard.
+  if (state.listenMode === 'asleep') {
     if (phraseMatch(heard, wake)) {
       setListenMode('awake');
-      // Preserve anything said AFTER the wake phrase, so
-      // "wake up jayla what's the weather" doesn't lose the question.
       const tail = extractTailAfter(heard, wake);
       state.pendingTranscript = tail;
       els.input.value = tail;
       autoGrow();
-      // Kick the silence timer so a single-breath prompt still fires.
-      if (state.silenceTimer) clearTimeout(state.silenceTimer);
-      state.silenceTimer = setTimeout(() => {
-        state.silenceTimer = null;
-        const text = cleanPendingTranscript(state.pendingTranscript, wake);
-        state.pendingTranscript = '';
-        if (text && !state.busy) submitVoiceText(text);
-      }, 1400);
+      armSilenceTimer(wake);
     }
     return;
   }
 
-  if (state.listenMode === 'awake') {
-    // Sleep phrase immediately puts us back to wake-word mode.
-    if (phraseMatch(heard, sleep)) {
-      if (state.silenceTimer) { clearTimeout(state.silenceTimer); state.silenceTimer = null; }
-      els.input.value = '';
-      autoGrow();
-      setListenMode('wake');
-      return;
-    }
+  // Default path: listenMode === 'awake'. Auto-send after a pause.
 
-    // Collect the prompt as final pieces arrive.
-    if (finalText.trim()) {
-      state.pendingTranscript = (state.pendingTranscript + ' ' + finalText).trim();
-    }
-
-    // Live-mirror the working transcript into the composer so the user sees it.
-    const preview = cleanPendingTranscript(
-      (state.pendingTranscript + ' ' + interimText).trim(),
-      wake
-    );
-    els.input.value = preview;
+  // Sleep phrase → pause auto-sending but keep the mic open.
+  if (phraseMatch(heard, sleep)) {
+    if (state.silenceTimer) { clearTimeout(state.silenceTimer); state.silenceTimer = null; }
+    state.pendingTranscript = '';
+    els.input.value = '';
     autoGrow();
-
-    // Reset the silence timer on any speech; fire onSend after a pause.
-    if (state.silenceTimer) clearTimeout(state.silenceTimer);
-    state.silenceTimer = setTimeout(() => {
-      state.silenceTimer = null;
-      const text = cleanPendingTranscript(state.pendingTranscript, wake);
-      state.pendingTranscript = '';
-      if (text && !state.busy) submitVoiceText(text);
-    }, 1400);
+    setListenMode('asleep');
+    return;
   }
+
+  // Collect final pieces (stable transcript) into the pending prompt.
+  if (finalText.trim()) {
+    state.pendingTranscript = (state.pendingTranscript + ' ' + finalText).trim();
+  }
+
+  // Live preview = committed pending + current interim; strip a leading wake
+  // phrase if the user still uses it out of habit.
+  const preview = cleanPendingTranscript(
+    (state.pendingTranscript + ' ' + interimText).trim(),
+    wake
+  );
+  els.input.value = preview;
+  autoGrow();
+
+  armSilenceTimer(wake);
+}
+
+// Fires the pending transcript after ~1.4 s of no new speech.
+function armSilenceTimer(wake) {
+  if (state.silenceTimer) clearTimeout(state.silenceTimer);
+  state.silenceTimer = setTimeout(() => {
+    state.silenceTimer = null;
+    const text = cleanPendingTranscript(state.pendingTranscript, wake);
+    state.pendingTranscript = '';
+    if (text && !state.busy) submitVoiceText(text);
+  }, 1400);
 }
 
 function setHeard(text) {
@@ -1091,8 +1084,8 @@ function setListenMode(mode) {
   const btn = els.micBtn;
   if (!chip || !btn) return;
 
-  chip.classList.remove('on', 'awake', 'speaking');
-  btn.classList.remove('listening', 'awake', 'speaking');
+  chip.classList.remove('on', 'awake', 'asleep', 'speaking');
+  btn.classList.remove('listening', 'awake', 'asleep', 'speaking');
 
   if (mode === 'off') {
     chip.style.display = 'none';
@@ -1101,14 +1094,14 @@ function setListenMode(mode) {
   }
   chip.style.display = '';
 
-  if (mode === 'wake') {
+  if (mode === 'asleep') {
     chip.classList.add('on');
     btn.classList.add('listening');
-    if (txt) txt.textContent = `LISTENING — say "${state.wakePhrase}"`;
+    if (txt) txt.textContent = `RESTING — say "${state.wakePhrase}" to resume`;
   } else if (mode === 'awake') {
     chip.classList.add('awake');
     btn.classList.add('awake');
-    if (txt) txt.textContent = `AWAKE — speak now (say "${state.sleepPhrase}" to rest)`;
+    if (txt) txt.textContent = `LISTENING — speak to send (say "${state.sleepPhrase}" to pause)`;
   } else if (mode === 'speaking') {
     chip.classList.add('speaking');
     btn.classList.add('speaking');
