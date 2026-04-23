@@ -19,12 +19,23 @@ const LS = {
 
 const $ = (id) => document.getElementById(id);
 
+// ---------- Defaults (baked-in so phones "just work") ----------
+// This frontend is paired with a specific Railway deployment. The API key
+// below only gates that one instance; rotate it on Railway any time and
+// update here to invalidate all old clients.
+const DEFAULTS = {
+  endpoint: 'https://ai-voice-production-9c61.up.railway.app',
+  apiKey:   'pNjHcXii3yC7DlFfah4GB_L5wwb-8qOcNKvmqi6bdFFULhxjxJ0dJ8HQY7FEahvn',
+  voiceId:  'NQMJRVvPew6HsaebYnZj',
+  modelId:  'eleven_flash_v2_5',
+};
+
 // ---------- State ----------
 const state = {
-  endpoint: localStorage.getItem(LS.endpoint) || '',
-  apiKey:   localStorage.getItem(LS.apiKey)   || '',
-  voiceId:  localStorage.getItem(LS.voiceId)  || '',
-  modelId:  localStorage.getItem(LS.modelId)  || 'eleven_flash_v2_5',
+  endpoint: localStorage.getItem(LS.endpoint) || DEFAULTS.endpoint,
+  apiKey:   localStorage.getItem(LS.apiKey)   || DEFAULTS.apiKey,
+  voiceId:  localStorage.getItem(LS.voiceId)  || DEFAULTS.voiceId,
+  modelId:  localStorage.getItem(LS.modelId)  || DEFAULTS.modelId,
   useTimed: localStorage.getItem(LS.useTimed) !== '0',
   name:     localStorage.getItem(LS.name)     || 'Companion',
   muted:    localStorage.getItem(LS.muted) === '1',
