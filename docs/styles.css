@@ -405,6 +405,7 @@ dialog fieldset.fs legend { color: var(--accent); font-size: 12px; letter-spacin
 dialog label.inline { display: flex; align-items: center; gap: 4px; margin-top: 10px; color: var(--text); font-size: 13px; }
 
 /* Mic button states */
+#micBtn.hint      { color: var(--accent); border-color: var(--accent); animation: micPulse 1.6s ease-in-out infinite; }
 #micBtn.listening { color: var(--accent); border-color: var(--accent); }
 #micBtn.awake     { color: #ffe26b;  border-color: #ffe26b; animation: micPulse 1.4s ease-in-out infinite; }
 #micBtn.speaking  { color: #ff7ad9;  border-color: #ff7ad9; }
@@ -417,17 +418,29 @@ dialog label.inline { display: flex; align-items: center; gap: 4px; margin-top: 
 #listenChip {
   position: absolute; left: 12px; top: 12px;
   display: none;
+  flex-wrap: wrap;
   align-items: center; gap: 6px;
+  max-width: calc(100% - 24px);
   padding: 5px 10px;
   background: #0b1130cc;
   border: 1px solid var(--panel-border);
-  border-radius: 999px;
+  border-radius: 14px;
   font-size: 11px; letter-spacing: .18em; text-transform: uppercase;
   color: var(--muted);
   z-index: 4;
 }
 #listenChip.on   { display: inline-flex; color: var(--accent); border-color: var(--accent); }
 #listenChip.awake { color: #ffe26b; border-color: #ffe26b; }
+#listenChip.speaking { display: inline-flex; color: #ff8fb6; border-color: #ff8fb6; }
+#listenChip .heard {
+  flex-basis: 100%;
+  font-size: 12px; letter-spacing: normal; text-transform: none;
+  color: #e6ecff; opacity: .85;
+  max-width: 320px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  direction: rtl; text-align: left;
+}
+#listenChip .heard:empty { display: none; }
 #listenChip .pulse {
   width: 8px; height: 8px; border-radius: 50%;
   background: currentColor;

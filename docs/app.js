@@ -92,6 +92,7 @@ const els = {
   calibCancelBtn: $('calibCancelBtn'),
   listenChip:   $('listenChip'),
   listenChipText: $('listenChipText'),
+  listenHeard:  $('listenHeard'),
 };
 
 // ---------- Boot ----------
@@ -135,12 +136,12 @@ function boot() {
 
   if (!state.endpoint || !state.apiKey) openSettings();
 
-  // If the user asked to always-listen on load and we have creds, kick it off.
-  // A visible button press is usually required for mic access; we still try,
-  // and fall back gracefully if the browser refuses.
+  // If the user asked to always-listen on load and we have creds, hint them to
+  // click the mic. Browsers require a user gesture for the first mic permission,
+  // so auto-starting silently would just fail.
   if (state.autoListen && state.endpoint && state.apiKey) {
-    // Slight delay so UI paints first.
-    setTimeout(() => { try { startListening(); } catch {} }, 500);
+    setStage('ACTIVE', 'Tap \ud83c\udf99 to start always-listening');
+    els.micBtn.classList.add('hint');
   }
 }
 
@@ -713,51 +714,85 @@ function toggleListening() {
 function startListening() {
   const SR = getSpeechRecognition();
   if (!SR) {
-    alert('Voice input is not supported in this browser. Try Chrome or Edge on desktop/Android.');
+    alert('Voice input is not supported in this browser. Try Chrome or Edge on desktop or Android.');
+    return;
+  }
+  if (!window.isSecureContext) {
+    alert('Microphone requires HTTPS. Open this site via https:// (GitHub Pages is fine).');
     return;
   }
   if (state.recognizer) { try { state.recognizer.stop(); } catch {} state.recognizer = null; }
 
-  const rec = new SR();
-  rec.continuous = true;
-  rec.interimResults = true;
-  rec.lang = 'en-US';
+  // Proactively prompt the OS mic permission via getUserMedia so the user sees
+  // the permission dialog even if Web Speech fails to surface one.
+  const ensureMic = navigator.mediaDevices && navigator.mediaDevices.getUserMedia
+    ? navigator.mediaDevices.getUserMedia({ audio: true })
+        .then((s) => { s.getTracks().forEach((t) => t.stop()); })
+        .catch((err) => { throw err; })
+    : Promise.resolve();
 
-  rec.onstart = () => {
-    state.listening = true;
-    state.recognizerRunning = true;
-    els.micBtn.setAttribute('aria-pressed', 'true');
-    setListenMode(state.listenMode === 'awake' ? 'awake' : 'wake');
-  };
+  ensureMic.then(() => {
+    const rec = new SR();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = 'en-US';
+    rec.maxAlternatives = 1;
 
-  rec.onerror = (e) => {
-    // "no-speech" and "aborted" are routine; don't alarm the user.
-    if (e.error && e.error !== 'no-speech' && e.error !== 'aborted') {
-      console.warn('Speech recognition error:', e.error);
+    rec.onstart = () => {
+      state.listening = true;
+      state.recognizerRunning = true;
+      els.micBtn.setAttribute('aria-pressed', 'true');
+      els.micBtn.classList.remove('hint');
+      setListenMode(state.listenMode === 'awake' ? 'awake' : 'wake');
+      setHeard('mic open — say something');
+    };
+
+    rec.onerror = (e) => {
+      console.warn('Speech recognition error:', e.error, e);
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        alert('Microphone permission was denied. Allow it in the site settings and try again.');
+        alert('Microphone permission was denied. Click the \ud83d\udd12 icon in the address bar, allow the mic for this site, then tap \ud83c\udf99 again.');
         state.listening = false;
         setListenMode('off');
+      } else if (e.error === 'audio-capture') {
+        alert('No microphone detected. Check that a mic is connected and selected as the default input.');
+        state.listening = false;
+        setListenMode('off');
+      } else if (e.error === 'network') {
+        setHeard('network error — retrying');
       }
-    }
-  };
+    };
 
-  rec.onend = () => {
-    state.recognizerRunning = false;
-    // Chrome ends the session every ~60s of silence; auto-restart while listening.
-    if (state.listening) {
-      try { rec.start(); } catch { setTimeout(() => { try { rec.start(); } catch {} }, 250); }
+    rec.onend = () => {
+      state.recognizerRunning = false;
+      // Chrome ends the session every ~60s of silence; auto-restart while listening.
+      if (state.listening) {
+        try { rec.start(); } catch { setTimeout(() => { try { rec.start(); } catch {} }, 250); }
+      } else {
+        setListenMode('off');
+      }
+    };
+
+    rec.onresult = onRecognitionResult;
+
+    state.recognizer = rec;
+    try {
+      rec.start();
+    } catch (err) {
+      console.warn('Could not start recognizer:', err);
+      alert('Could not start voice recognition: ' + (err && err.message ? err.message : err));
+    }
+  }).catch((err) => {
+    console.warn('Mic permission rejected:', err);
+    const name = err && err.name;
+    if (name === 'NotAllowedError' || name === 'SecurityError') {
+      alert('Microphone permission was denied. Click the \ud83d\udd12 icon in the address bar, allow the mic for this site, then tap \ud83c\udf99 again.');
+    } else if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+      alert('No microphone detected. Plug one in or check your system input device.');
     } else {
-      setListenMode('off');
+      alert('Could not access microphone: ' + (err && err.message ? err.message : err));
     }
-  };
-
-  rec.onresult = onRecognitionResult;
-
-  state.recognizer = rec;
-  try { rec.start(); } catch (err) {
-    console.warn('Could not start recognizer:', err);
-  }
+    setListenMode('off');
+  });
 }
 
 function stopListening() {
@@ -787,6 +822,9 @@ function onRecognitionResult(event) {
   const heard = normalizePhrase(heardRaw);
   if (!heard) return;
 
+  // Always echo what the mic is hearing so the user can tell it's working.
+  setHeard(heardRaw);
+
   const wake  = normalizePhrase(state.wakePhrase);
   const sleep = normalizePhrase(state.sleepPhrase);
   const stop  = normalizePhrase(state.stopPhrase);
@@ -804,7 +842,8 @@ function onRecognitionResult(event) {
     if (wake && heard.includes(wake)) {
       setListenMode('awake');
       state.pendingTranscript = '';
-      state.wakeIndex = event.resultIndex + 1; // ignore the wake itself
+      els.input.value = '';
+      autoGrow();
     }
     return;
   }
@@ -813,14 +852,24 @@ function onRecognitionResult(event) {
     // Sleep phrase immediately puts us back to wake-word mode.
     if (sleep && heard.includes(sleep)) {
       if (state.silenceTimer) { clearTimeout(state.silenceTimer); state.silenceTimer = null; }
+      els.input.value = '';
+      autoGrow();
       setListenMode('wake');
       return;
     }
 
-    // Collect the prompt as final pieces arrive (strip any trailing sleep mention).
+    // Collect the prompt as final pieces arrive.
     if (finalText.trim()) {
       state.pendingTranscript = (state.pendingTranscript + ' ' + finalText).trim();
     }
+
+    // Live-mirror the working transcript into the composer so the user sees it.
+    const preview = cleanPendingTranscript(
+      (state.pendingTranscript + ' ' + interimText).trim(),
+      wake
+    );
+    els.input.value = preview;
+    autoGrow();
 
     // Reset the silence timer on any speech; fire onSend after a pause.
     if (state.silenceTimer) clearTimeout(state.silenceTimer);
@@ -831,6 +880,11 @@ function onRecognitionResult(event) {
       if (text && !state.busy) submitVoiceText(text);
     }, 1400);
   }
+}
+
+function setHeard(text) {
+  if (!els.listenHeard) return;
+  els.listenHeard.textContent = text ? ('\u201C' + text + '\u201D') : '';
 }
 
 function cleanPendingTranscript(raw, wake) {
@@ -868,6 +922,7 @@ function setListenMode(mode) {
 
   if (mode === 'off') {
     chip.style.display = 'none';
+    setHeard('');
     return;
   }
   chip.style.display = '';
