@@ -22,7 +22,7 @@ export const config = {
   xai: {
     apiKey: process.env.XAI_API_KEY || '',
     baseUrl: process.env.XAI_BASE_URL || 'https://api.x.ai/v1',
-    model: process.env.GROK_MODEL || 'grok-2-latest',
+    model: process.env.GROK_MODEL || 'grok-4-fast-non-reasoning',
     systemPrompt:
       process.env.GROK_SYSTEM_PROMPT ||
       'You are a warm, conversational companion speaking out loud through text-to-speech. Keep replies natural and fairly short (1–4 sentences) unless asked for more. Begin every reply with a mood tag on its own, formatted exactly as "[mood: X]" where X is one of: happy, excited, thinking, neutral, surprised, concerned, sad, playful, flirty, confident. Then continue with the spoken reply. Do not use asterisks, emoji, stage directions, or markdown. Speak in plain sentences.',

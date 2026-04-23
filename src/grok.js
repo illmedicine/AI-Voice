@@ -59,11 +59,24 @@ export async function grokChat({
   const data = await res.json();
   const raw = data?.choices?.[0]?.message?.content?.trim() || '';
 
-  // Extract an optional leading mood tag like [mood: happy] that the system
-  // prompt may instruct Grok to emit. Strip it from the visible/spoken text.
-  const moodMatch = raw.match(/^\s*\[\s*mood\s*:\s*([a-zA-Z_-]+)\s*\]\s*/i);
-  const mood = moodMatch ? moodMatch[1].toLowerCase() : 'neutral';
-  const text = moodMatch ? raw.slice(moodMatch[0].length).trim() : raw;
+  // Extract an optional leading mood tag. Accept several shapes Grok tends
+  // to produce: "[mood: happy]", "[happy]", "(mood: happy)", "mood: happy\n".
+  const allowed = /^(happy|excited|thinking|neutral|surprised|concerned|sad|playful|flirty|confident|angry|calm|curious)$/i;
+  const patterns = [
+    /^\s*[\[\(]\s*mood\s*[:\-]\s*([a-zA-Z_-]+)\s*[\]\)]\s*/i,
+    /^\s*mood\s*[:\-]\s*([a-zA-Z_-]+)\s*[\r\n]+/i,
+    /^\s*[\[\(]\s*([a-zA-Z_-]+)\s*[\]\)]\s*/,
+  ];
+  let mood = 'neutral';
+  let text = raw;
+  for (const re of patterns) {
+    const m = raw.match(re);
+    if (m && allowed.test(m[1])) {
+      mood = m[1].toLowerCase();
+      text = raw.slice(m[0].length).trim();
+      break;
+    }
+  }
 
   return { text, mood, raw: data };
 }
