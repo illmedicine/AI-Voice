@@ -79,6 +79,49 @@ router.post('/v1/chat', requireApiKey, async (req, res) => {
   }
 });
 
+// --- Grok vision: "see" an image and answer ---
+// Body: { prompt?: string, image_base64: string, mime?: string, image_url?: string,
+//         system?: string, model?: string, detail?: 'auto'|'low'|'high' }
+router.post('/v1/see', requireApiKey, async (req, res) => {
+  try {
+    const {
+      prompt,
+      image_base64,
+      image_url,
+      mime = 'image/jpeg',
+      system,
+      model,
+      temperature,
+      max_tokens,
+      detail = 'auto',
+    } = req.body || {};
+
+    if (!image_base64 && !image_url) {
+      return res.status(400).json({ error: 'Provide `image_base64` or `image_url`.' });
+    }
+    const url = image_url
+      ? image_url
+      : `data:${mime};base64,${String(image_base64).replace(/^data:[^,]+,/, '')}`;
+
+    const userContent = [
+      { type: 'text', text: String(prompt || "What do you see? Describe it briefly and react in character.") },
+      { type: 'image_url', image_url: { url, detail } },
+    ];
+
+    const { text, mood, raw } = await grokChat({
+      messages: [{ role: 'user', content: userContent }],
+      system,
+      model,
+      temperature,
+      maxTokens: max_tokens,
+    });
+    res.json({ text, mood, model: raw?.model, usage: raw?.usage });
+  } catch (err) {
+    req.log?.error({ err }, 'grok vision failed');
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
 // --- ElevenLabs TTS only ---
 router.post('/v1/speak', requireApiKey, async (req, res) => {
   try {

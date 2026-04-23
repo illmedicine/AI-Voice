@@ -456,3 +456,92 @@ dialog label.inline { display: flex; align-items: center; gap: 4px; margin-top: 
 .dialog-actions button.secondary { background: #1a2350; color: var(--text); }
 
 code { background: #0a1230; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+
+/* ---------- Camera + remote video overlays ---------- */
+#videoLayer { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
+#videoLayer video {
+  position: absolute;
+  background: #000;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  box-shadow: 0 8px 30px rgba(0,0,0,.4);
+  pointer-events: auto;
+}
+#localVideo {
+  right: 12px; bottom: 12px;
+  width: 34%; max-width: 220px; aspect-ratio: 3/4;
+  object-fit: cover;
+  display: none;
+  transform: scaleX(-1); /* mirror selfie */
+}
+#localVideo.on { display: block; }
+#remoteVideo {
+  left: 12px; top: 12px;
+  width: 42%; max-width: 260px; aspect-ratio: 4/3;
+  object-fit: cover;
+  display: none;
+}
+#remoteVideo.on { display: block; }
+#remoteLabel {
+  position: absolute; left: 18px; top: 12px;
+  z-index: 6;
+  padding: 3px 8px;
+  font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  background: #0b1130cc; color: var(--accent);
+  border: 1px solid var(--accent); border-radius: 10px;
+}
+#remoteLabel[hidden] { display: none; }
+
+/* ---------- Room panel (inline under chat in desktop, floating on mobile) ---------- */
+#room {
+  position: fixed;
+  right: 16px; top: 16px;
+  width: 220px; max-height: 40vh;
+  overflow: auto;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  backdrop-filter: blur(6px);
+  z-index: 10;
+  font-size: 13px;
+}
+#roomHeader { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+#roomHeader .spacer { flex: 1; }
+#roomHeader .inline { font-size: 11px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
+#wsDot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #555; display: inline-block;
+}
+#wsDot.on { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.badge {
+  min-width: 20px; padding: 1px 6px;
+  border-radius: 10px;
+  background: #1b2658; color: var(--accent);
+  font-size: 12px; text-align: center;
+  border: 1px solid var(--panel-border);
+}
+#userList { list-style: none; margin: 0; padding: 0; }
+#userList li {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 2px;
+  border-bottom: 1px dashed #1f2a5555;
+}
+#userList li:last-child { border-bottom: none; }
+#userList .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#userList .cam-indicator { font-size: 12px; opacity: .6; }
+#userList .cam-indicator.on { opacity: 1; color: var(--accent); }
+#userList button {
+  font-size: 11px; padding: 2px 6px;
+  background: #1b2658; color: var(--text);
+  border: 1px solid var(--panel-border); border-radius: 8px;
+  cursor: pointer;
+}
+#userList button:hover { border-color: var(--accent); }
+#userList button:disabled { opacity: .4; cursor: not-allowed; }
+@media (max-width: 900px) {
+  #room { right: 8px; top: 8px; width: 180px; max-height: 30vh; }
+}
+
+/* Camera button active state */
+#camBtn[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }

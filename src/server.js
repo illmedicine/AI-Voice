@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 import { config, assertConfig } from './config.js';
 import { router } from './routes.js';
+import { attachRealtime } from './realtime.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -37,7 +38,7 @@ app.use(
         'style-src': ["'self'", "'unsafe-inline'"],
         'img-src': ["'self'", 'data:'],
         'media-src': ["'self'", 'blob:', 'data:'],
-        'connect-src': ["'self'", 'https:', 'http:'],
+        'connect-src': ["'self'", 'https:', 'http:', 'ws:', 'wss:'],
       },
     },
   }),
@@ -51,7 +52,7 @@ app.use(
   }),
 );
 app.use(compression());
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '15mb' }));
 app.use(pinoHttp({ logger }));
 
 // Serve the static test page from /public at the site root.
@@ -93,6 +94,9 @@ app.use((err, req, res, _next) => {
 const server = app.listen(config.port, () => {
   logger.info(`ai-voice-middleware listening on :${config.port}`);
 });
+
+// WebSocket presence + WebRTC signaling on /rt
+attachRealtime(server, logger);
 
 // Graceful shutdown
 function shutdown(signal) {

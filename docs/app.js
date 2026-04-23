@@ -292,6 +292,7 @@ function saveSettings(e) {
   applyName();
   updateConnectionIndicator();
   setStage('ACTIVE', 'Waiting for prompt');
+  try { window.dispatchEvent(new CustomEvent('aivoice:settingsChanged')); } catch {}
 }
 
 async function testConnection() {
@@ -559,6 +560,16 @@ async function onSend(e) {
       // playAudio handles pausing/resuming the mic + chip state.
       await playAudio(j.audio_base64, j.content_type || 'audio/mpeg', j.alignment);
     }
+    // Let the realtime module broadcast this reply to other connected peers
+    // if the "Broadcast replies" toggle is on.
+    try {
+      window.dispatchEvent(new CustomEvent('jaylaReply', { detail: {
+        text: replyText,
+        mood,
+        audio_base64: j.audio_base64 || '',
+        content_type: j.content_type || 'audio/mpeg',
+      }}));
+    } catch {}
     setStage('ACTIVE', 'Waiting for prompt');
   } catch (err) {
     typingEl.remove();
@@ -1218,6 +1229,384 @@ function setListenMode(mode) {
     if (txt) txt.textContent = `SPEAKING — say "${state.stopPhrase}" to interrupt`;
   }
 }
+
+// ---------- Camera + Vision + Realtime (WebSocket + WebRTC) ----------
+// Appended feature block. Kept self-contained at the bottom so the rest of
+// the original chat flow is unaffected.
+(function initRealtime() {
+  const camBtn    = document.getElementById('camBtn');
+  const seeBtn    = document.getElementById('seeBtn');
+  const localVid  = document.getElementById('localVideo');
+  const remoteVid = document.getElementById('remoteVideo');
+  const remoteLbl = document.getElementById('remoteLabel');
+  const visionCv  = document.getElementById('visionCanvas');
+  const userListEl = document.getElementById('userList');
+  const userCountEl = document.getElementById('userCount');
+  const wsDot    = document.getElementById('wsDot');
+  const roomBroadcast = document.getElementById('roomBroadcast');
+
+  if (!camBtn || !seeBtn) return; // page not upgraded
+
+  const rtState = {
+    stream: null,
+    ws: null,
+    wsReady: false,
+    selfId: null,
+    users: [], // [{id,name,hasCamera}]
+    pcs: new Map(), // peerId -> {pc, initiator}
+    watching: null, // peerId we're viewing
+  };
+
+  // ---- Camera ----
+  async function startCamera() {
+    if (rtState.stream) return;
+    try {
+      rtState.stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      localVid.srcObject = rtState.stream;
+      localVid.classList.add('on');
+      camBtn.setAttribute('aria-pressed', 'true');
+      seeBtn.disabled = false;
+      // Push tracks into any outgoing peer connections we own as sender.
+      for (const [, entry] of rtState.pcs) {
+        if (entry.initiator) attachTracks(entry.pc);
+      }
+      sendWS({ type: 'camera', on: true });
+    } catch (err) {
+      alert('Camera unavailable: ' + (err.message || err));
+    }
+  }
+
+  function stopCamera() {
+    if (rtState.stream) {
+      for (const t of rtState.stream.getTracks()) t.stop();
+      rtState.stream = null;
+    }
+    localVid.srcObject = null;
+    localVid.classList.remove('on');
+    camBtn.setAttribute('aria-pressed', 'false');
+    sendWS({ type: 'camera', on: false });
+  }
+
+  camBtn.addEventListener('click', () => {
+    if (rtState.stream) stopCamera(); else startCamera();
+  });
+
+  // ---- Vision (ask her about what the camera sees) ----
+  async function snapshotAndAsk() {
+    if (!rtState.stream) { await startCamera(); if (!rtState.stream) return; }
+    if (!state.endpoint || !state.apiKey) { openSettings(); return; }
+
+    // Draw current video frame to hidden canvas -> JPEG base64.
+    const vw = localVid.videoWidth || 640;
+    const vh = localVid.videoHeight || 480;
+    const maxW = 896; // keep payload small for vision model
+    const scale = Math.min(1, maxW / vw);
+    visionCv.width  = Math.round(vw * scale);
+    visionCv.height = Math.round(vh * scale);
+    const ctx = visionCv.getContext('2d');
+    // Un-mirror when encoding so Grok sees the real world orientation.
+    ctx.save();
+    ctx.scale(-1, 1);
+    ctx.drawImage(localVid, -visionCv.width, 0, visionCv.width, visionCv.height);
+    ctx.restore();
+    const dataUrl = visionCv.toDataURL('image/jpeg', 0.7);
+    const b64 = dataUrl.split(',')[1];
+
+    const prompt = (els.input.value || '').trim() ||
+      'Tell me what you see through my camera right now. Be specific and stay in character.';
+    els.input.value = ''; autoGrow();
+
+    const userMsg = { role: 'user', text: '[📷 sent a snapshot] ' + prompt };
+    state.history.push(userMsg);
+    renderMessage(userMsg);
+    saveHistory();
+
+    setStage('THINKING', 'Looking at the camera…');
+    setMood('curious');
+
+    try {
+      const r = await fetchWithRetry(state.endpoint + '/v1/see', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': state.apiKey },
+        body: JSON.stringify({ prompt, image_base64: b64, mime: 'image/jpeg' }),
+      });
+      if (!r.ok) throw new Error(await extractErr(r));
+      const j = await r.json();
+      const mood = (j.mood || 'neutral').toLowerCase();
+      setMood(mood);
+      const botMsg = { role: 'bot', text: j.text || '', mood };
+      state.history.push(botMsg);
+      renderMessage(botMsg);
+      saveHistory();
+
+      // TTS the vision reply (reuse /v1/speak) unless muted.
+      if (!state.muted && j.text) {
+        setStage('SPEAKING', 'Now playing voice');
+        try {
+          const tts = await fetchWithRetry(state.endpoint + '/v1/speak', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-api-key': state.apiKey, 'Accept': 'audio/mpeg' },
+            body: JSON.stringify({ text: j.text, voiceId: state.voiceId, modelId: state.modelId }),
+          });
+          if (tts.ok) {
+            const buf = await tts.arrayBuffer();
+            const b64a = arrayBufferToBase64(buf);
+            await playAudio(b64a, 'audio/mpeg', null);
+            window.dispatchEvent(new CustomEvent('jaylaReply', { detail: {
+              text: j.text, mood, audio_base64: b64a, content_type: 'audio/mpeg',
+            }}));
+          }
+        } catch {}
+      }
+      setStage('ACTIVE', 'Waiting for prompt');
+    } catch (err) {
+      setStage('ERROR', 'Vision call failed');
+      setMood('concerned');
+      renderMessage({ role: 'err', text: err.message || String(err) });
+    }
+  }
+  seeBtn.addEventListener('click', snapshotAndAsk);
+
+  function arrayBufferToBase64(buf) {
+    const bytes = new Uint8Array(buf);
+    let s = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      s += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(s);
+  }
+
+  // ---- WebSocket presence + signaling ----
+  function wsURL() {
+    if (!state.endpoint || !state.apiKey) return null;
+    const u = new URL(state.endpoint);
+    u.protocol = (u.protocol === 'https:') ? 'wss:' : 'ws:';
+    u.pathname = '/rt';
+    u.searchParams.set('key', state.apiKey);
+    u.searchParams.set('name', state.name || 'guest');
+    return u.toString();
+  }
+
+  function connectWS() {
+    const url = wsURL();
+    if (!url) return;
+    try { rtState.ws?.close(); } catch {}
+    const ws = new WebSocket(url);
+    rtState.ws = ws;
+    ws.addEventListener('open', () => {
+      rtState.wsReady = true;
+      wsDot?.classList.add('on');
+    });
+    ws.addEventListener('close', () => {
+      rtState.wsReady = false;
+      wsDot?.classList.remove('on');
+      // Reconnect after a short backoff.
+      setTimeout(connectWS, 3000);
+    });
+    ws.addEventListener('error', () => { try { ws.close(); } catch {} });
+    ws.addEventListener('message', (e) => {
+      let msg; try { msg = JSON.parse(e.data); } catch { return; }
+      handleWSMessage(msg);
+    });
+  }
+
+  function sendWS(obj) {
+    if (rtState.ws && rtState.ws.readyState === 1) {
+      try { rtState.ws.send(JSON.stringify(obj)); } catch {}
+    }
+  }
+
+  function handleWSMessage(msg) {
+    switch (msg.type) {
+      case 'welcome':
+        rtState.selfId = msg.id;
+        rtState.users = msg.users || [];
+        renderUsers();
+        break;
+      case 'presence':
+        rtState.users = msg.users || [];
+        renderUsers();
+        break;
+      case 'left':
+        // A peer left — tear down any PC to them.
+        closePeer(msg.id);
+        break;
+      case 'chat':
+        renderMessage({ role: 'user', text: `[${msg.name || 'peer'}] ${msg.text}` });
+        break;
+      case 'speak':
+        // Another client produced a reply — play it here too.
+        if (!state.muted && msg.audio_base64) {
+          renderMessage({ role: 'bot', text: msg.text, mood: msg.mood || 'neutral' });
+          setMood(msg.mood || 'neutral');
+          playAudio(msg.audio_base64, msg.content_type || 'audio/mpeg', null);
+        } else if (msg.text) {
+          renderMessage({ role: 'bot', text: msg.text, mood: msg.mood || 'neutral' });
+        }
+        break;
+      case 'rtc-request':
+        // Someone wants to view our camera — auto-accept if camera is on.
+        if (rtState.stream) startPeer(msg.from, true);
+        break;
+      case 'rtc-offer':
+        handleOffer(msg.from, msg.payload);
+        break;
+      case 'rtc-answer':
+        handleAnswer(msg.from, msg.payload);
+        break;
+      case 'rtc-ice':
+        handleIce(msg.from, msg.payload);
+        break;
+      case 'rtc-close':
+        closePeer(msg.from);
+        break;
+    }
+  }
+
+  // Broadcast her replies to other connected devices.
+  window.addEventListener('jaylaReply', (ev) => {
+    if (!roomBroadcast?.checked) return;
+    const d = ev.detail || {};
+    sendWS({ type: 'speak', text: d.text, mood: d.mood, audio_base64: d.audio_base64, content_type: d.content_type });
+  });
+
+  // ---- User list UI ----
+  function renderUsers() {
+    if (!userListEl) return;
+    const others = rtState.users.filter((u) => u.id !== rtState.selfId);
+    userCountEl.textContent = String(rtState.users.length);
+    userListEl.innerHTML = '';
+    if (others.length === 0) {
+      const li = document.createElement('li');
+      li.innerHTML = '<span class="name" style="color:var(--muted)">No one else here</span>';
+      userListEl.appendChild(li);
+      return;
+    }
+    for (const u of others) {
+      const li = document.createElement('li');
+      const name = document.createElement('span');
+      name.className = 'name'; name.textContent = u.name || u.id.slice(0, 6);
+      const cam = document.createElement('span');
+      cam.className = 'cam-indicator' + (u.hasCamera ? ' on' : '');
+      cam.textContent = u.hasCamera ? '📷' : '—';
+      const btn = document.createElement('button');
+      if (rtState.watching === u.id) {
+        btn.textContent = 'Stop';
+        btn.onclick = () => { sendWS({ type: 'rtc-close', to: u.id }); closePeer(u.id); };
+      } else {
+        btn.textContent = u.hasCamera ? 'View' : 'Request';
+        btn.onclick = () => requestPeerVideo(u.id);
+      }
+      li.appendChild(name); li.appendChild(cam); li.appendChild(btn);
+      userListEl.appendChild(li);
+    }
+  }
+
+  // ---- WebRTC ----
+  const RTC_CFG = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+  function requestPeerVideo(peerId) {
+    rtState.watching = peerId;
+    startPeer(peerId, false);
+    sendWS({ type: 'rtc-request', to: peerId });
+    renderUsers();
+  }
+
+  function startPeer(peerId, isInitiator) {
+    if (rtState.pcs.has(peerId)) return rtState.pcs.get(peerId).pc;
+    const pc = new RTCPeerConnection(RTC_CFG);
+    rtState.pcs.set(peerId, { pc, initiator: isInitiator });
+
+    pc.onicecandidate = (ev) => {
+      if (ev.candidate) sendWS({ type: 'rtc-ice', to: peerId, payload: ev.candidate });
+    };
+    pc.ontrack = (ev) => {
+      remoteVid.srcObject = ev.streams[0];
+      remoteVid.classList.add('on');
+      const peer = rtState.users.find((u) => u.id === peerId);
+      remoteLbl.textContent = (peer?.name || 'peer') + ' · live';
+      remoteLbl.hidden = false;
+      rtState.watching = peerId;
+      renderUsers();
+    };
+    pc.onconnectionstatechange = () => {
+      if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) closePeer(peerId);
+    };
+
+    if (isInitiator) {
+      attachTracks(pc);
+      pc.createOffer().then((o) => pc.setLocalDescription(o)).then(() => {
+        sendWS({ type: 'rtc-offer', to: peerId, payload: pc.localDescription });
+      });
+    }
+    return pc;
+  }
+
+  function attachTracks(pc) {
+    if (!rtState.stream) return;
+    for (const track of rtState.stream.getTracks()) {
+      const exists = pc.getSenders().some((s) => s.track === track);
+      if (!exists) pc.addTrack(track, rtState.stream);
+    }
+  }
+
+  async function handleOffer(peerId, offer) {
+    const entry = rtState.pcs.get(peerId) || { pc: new RTCPeerConnection(RTC_CFG), initiator: false };
+    if (!rtState.pcs.has(peerId)) {
+      rtState.pcs.set(peerId, entry);
+      entry.pc.onicecandidate = (ev) => {
+        if (ev.candidate) sendWS({ type: 'rtc-ice', to: peerId, payload: ev.candidate });
+      };
+      entry.pc.ontrack = (ev) => {
+        remoteVid.srcObject = ev.streams[0];
+        remoteVid.classList.add('on');
+        remoteLbl.textContent = (rtState.users.find((u)=>u.id===peerId)?.name || 'peer') + ' · live';
+        remoteLbl.hidden = false;
+      };
+    }
+    attachTracks(entry.pc);
+    await entry.pc.setRemoteDescription(offer);
+    const ans = await entry.pc.createAnswer();
+    await entry.pc.setLocalDescription(ans);
+    sendWS({ type: 'rtc-answer', to: peerId, payload: entry.pc.localDescription });
+  }
+
+  async function handleAnswer(peerId, answer) {
+    const entry = rtState.pcs.get(peerId); if (!entry) return;
+    await entry.pc.setRemoteDescription(answer);
+  }
+
+  async function handleIce(peerId, cand) {
+    const entry = rtState.pcs.get(peerId); if (!entry) return;
+    try { await entry.pc.addIceCandidate(cand); } catch {}
+  }
+
+  function closePeer(peerId) {
+    const entry = rtState.pcs.get(peerId);
+    if (entry) { try { entry.pc.close(); } catch {} rtState.pcs.delete(peerId); }
+    if (rtState.watching === peerId) {
+      rtState.watching = null;
+      remoteVid.srcObject = null;
+      remoteVid.classList.remove('on');
+      remoteLbl.hidden = true;
+    }
+    renderUsers();
+  }
+
+  // Connect once on load; reconnect if endpoint/key changes.
+  connectWS();
+  window.addEventListener('aivoice:settingsChanged', connectWS);
+
+  // Ask any granted camera to stop cleanly when leaving.
+  window.addEventListener('beforeunload', () => {
+    try { for (const [, e] of rtState.pcs) e.pc.close(); } catch {}
+    stopCamera();
+  });
+})();
 
 // ---------- Go ----------
 boot();

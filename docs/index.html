@@ -99,7 +99,29 @@
         <span id="listenChipText">Listening</span>
         <div id="listenHeard" class="heard"></div>
       </div>
+      <!-- Camera + remote peer video overlays -->
+      <div id="videoLayer">
+        <video id="localVideo" autoplay playsinline muted></video>
+        <video id="remoteVideo" autoplay playsinline></video>
+        <div id="remoteLabel" hidden></div>
+      </div>
+      <canvas id="visionCanvas" hidden></canvas>
     </div>
+  </section>
+
+  <!-- Room / users panel -->
+  <section id="room" aria-label="Connected users">
+    <header id="roomHeader">
+      <span class="dot" id="wsDot" title="Room not connected"></span>
+      <span>Room</span>
+      <span id="userCount" class="badge">0</span>
+      <div class="spacer"></div>
+      <label class="inline">
+        <input type="checkbox" id="roomBroadcast" />
+        Broadcast replies
+      </label>
+    </header>
+    <ul id="userList"></ul>
   </section>
 
   <!-- Chat panel -->
@@ -108,6 +130,8 @@
       <div class="dot" id="connDot" title="Not connected"></div>
       <div id="headerTitle">AI Companion</div>
       <div class="spacer"></div>
+      <button id="camBtn" class="icon" title="Toggle camera" aria-pressed="false">📷</button>
+      <button id="seeBtn" class="icon" title="Ask her what she sees">👁</button>
       <button id="micBtn" class="icon" title="Toggle always-listening" aria-pressed="false">🎙</button>
       <button id="muteBtn" class="icon" title="Mute voice" aria-pressed="false">🔊</button>
       <button id="clearBtn" class="icon" title="Clear conversation">🗑</button>
