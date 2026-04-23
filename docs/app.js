@@ -930,6 +930,26 @@ function normalizePhrase(s) {
   return (s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+// Fuzzy match — returns true if all words of `needle` appear in order within
+// `haystack`, even with extra words between them. Tolerates Chrome mishearing
+// "jayla" as "jayla", "jada", "jayla's", etc. (Also matches the bare name.)
+function phraseMatch(haystack, needle) {
+  if (!needle) return false;
+  const h = haystack.split(' ').filter(Boolean);
+  const n = needle.split(' ').filter(Boolean);
+  if (n.length === 0) return false;
+  let hi = 0;
+  for (const word of n) {
+    let found = false;
+    while (hi < h.length) {
+      const hw = h[hi++];
+      if (hw === word || hw.startsWith(word) || word.startsWith(hw)) { found = true; break; }
+    }
+    if (!found) return false;
+  }
+  return true;
+}
+
 function onRecognitionResult(event) {
   // Build the newest final transcript and the latest interim.
   let finalText = '';
@@ -945,6 +965,12 @@ function onRecognitionResult(event) {
 
   // Always echo what the mic is hearing so the user can tell it's working.
   setHeard(heardRaw);
+  // Also mirror into the composer at ALL times so the user can SEE mic works,
+  // even before the wake phrase matches.
+  if (state.listenMode !== 'awake' && state.listenMode !== 'speaking') {
+    els.input.value = heardRaw;
+    autoGrow();
+  }
 
   const wake  = normalizePhrase(state.wakePhrase);
   const sleep = normalizePhrase(state.sleepPhrase);
@@ -952,7 +978,7 @@ function onRecognitionResult(event) {
 
   // Stop/sleep phrase always interrupts her speech immediately.
   if (state.listenMode === 'speaking') {
-    if ((stop && heard.includes(stop)) || (sleep && heard.includes(sleep))) {
+    if (phraseMatch(heard, stop) || phraseMatch(heard, sleep)) {
       interruptSpeaking();
       setListenMode('wake');
     }
@@ -960,18 +986,29 @@ function onRecognitionResult(event) {
   }
 
   if (state.listenMode === 'wake' || state.listenMode === 'off') {
-    if (wake && heard.includes(wake)) {
+    if (phraseMatch(heard, wake)) {
       setListenMode('awake');
-      state.pendingTranscript = '';
-      els.input.value = '';
+      // Preserve anything said AFTER the wake phrase, so
+      // "wake up jayla what's the weather" doesn't lose the question.
+      const tail = extractTailAfter(heard, wake);
+      state.pendingTranscript = tail;
+      els.input.value = tail;
       autoGrow();
+      // Kick the silence timer so a single-breath prompt still fires.
+      if (state.silenceTimer) clearTimeout(state.silenceTimer);
+      state.silenceTimer = setTimeout(() => {
+        state.silenceTimer = null;
+        const text = cleanPendingTranscript(state.pendingTranscript, wake);
+        state.pendingTranscript = '';
+        if (text && !state.busy) submitVoiceText(text);
+      }, 1400);
     }
     return;
   }
 
   if (state.listenMode === 'awake') {
     // Sleep phrase immediately puts us back to wake-word mode.
-    if (sleep && heard.includes(sleep)) {
+    if (phraseMatch(heard, sleep)) {
       if (state.silenceTimer) { clearTimeout(state.silenceTimer); state.silenceTimer = null; }
       els.input.value = '';
       autoGrow();
@@ -1012,6 +1049,22 @@ function cleanPendingTranscript(raw, wake) {
   let t = normalizePhrase(raw);
   if (wake && t.startsWith(wake)) t = t.slice(wake.length).trim();
   return t;
+}
+
+// Return everything said after the last word of `needle` within `haystack`.
+// Both args are normalized lowercase strings.
+function extractTailAfter(haystack, needle) {
+  if (!needle) return '';
+  const n = needle.split(' ').filter(Boolean);
+  const h = haystack.split(' ').filter(Boolean);
+  if (n.length === 0) return '';
+  const last = n[n.length - 1];
+  for (let i = h.length - 1; i >= 0; i--) {
+    if (h[i] === last || h[i].startsWith(last) || last.startsWith(h[i])) {
+      return h.slice(i + 1).join(' ').trim();
+    }
+  }
+  return '';
 }
 
 function submitVoiceText(text) {
