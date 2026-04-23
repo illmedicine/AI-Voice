@@ -138,6 +138,12 @@ function boot() {
   setStage(state.endpoint && state.apiKey ? 'ACTIVE' : 'INITIALIZING',
            state.endpoint && state.apiKey ? 'Waiting for prompt' : 'Tap settings to begin');
 
+  // Warm up the middleware so the first real request is snappy (Railway can
+  // be slow on cold start; mobile is especially sensitive).
+  if (state.endpoint) {
+    fetch(state.endpoint + '/health', { cache: 'no-store' }).catch(() => {});
+  }
+
   // Consume ?setup= / #setup= from the URL for easy phone provisioning.
   consumeSetupHash();
 
@@ -495,12 +501,10 @@ async function onSend(e) {
     if (state.voiceId) body.voiceId = state.voiceId;
     if (state.modelId) body.modelId = state.modelId;
 
-    const r = await fetch(url, {
+    const r = await fetchWithRetry(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': state.apiKey },
       body: JSON.stringify(body),
-    }).catch((err) => {
-      throw new Error(describeFetchError(err, url));
     });
     if (!r.ok) throw new Error(await extractErr(r));
     const j = await r.json();
@@ -570,9 +574,31 @@ function describeFetchError(err, url) {
   }
   if (!navigator.onLine) hints.push('Device reports it is offline.');
   if (hints.length === 0) {
-    hints.push('Likely causes: wrong URL, middleware is asleep, or CORS blocked. Tap Settings → Test to verify /health.');
+    hints.push('Hit: ' + url + '. Likely causes: phone blocking Railway, flaky cellular, or middleware is waking up. Tap Settings → Test to verify /health.');
   }
   return base + ' — ' + hints.join(' ');
+}
+
+// Fetch with a 45s timeout and one automatic retry on transient network
+// failures. Mobile networks (especially cellular) often drop the first
+// request to a cold endpoint; a retry usually succeeds.
+async function fetchWithRetry(url, init, attempt = 0) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 45000);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal, cache: 'no-store' });
+  } catch (err) {
+    const isNetwork = err && (err.name === 'TypeError' || err.name === 'AbortError');
+    if (isNetwork && attempt === 0) {
+      // Warm up the middleware with a quick health ping, then retry.
+      try { await fetch(state.endpoint + '/health', { cache: 'no-store' }); } catch {}
+      await new Promise((r) => setTimeout(r, 600));
+      return fetchWithRetry(url, init, attempt + 1);
+    }
+    throw new Error(describeFetchError(err, url));
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ---------- Stage / mood helpers ----------
