@@ -38,6 +38,26 @@
         <input type="checkbox" id="cfgUseTimed" checked />
         Use ElevenLabs timestamps for precise lip-sync
       </label>
+
+      <fieldset class="fs">
+        <legend>Always-listening (wake words)</legend>
+        <div class="row2">
+          <label>Wake phrase
+            <input id="cfgWake" type="text" placeholder="wake up jayla" />
+          </label>
+          <label>Sleep phrase
+            <input id="cfgSleep" type="text" placeholder="jayla sleep time" />
+          </label>
+        </div>
+        <label>Stop-speaking phrase (interrupts her mid-reply)
+          <input id="cfgStop" type="text" placeholder="jayla stop" />
+        </label>
+        <label class="inline">
+          <input type="checkbox" id="cfgAutoListen" />
+          Start always-listening automatically on page load
+        </label>
+      </fieldset>
+
       <label>Companion name
         <input id="cfgName" type="text" placeholder="Companion" />
       </label>
@@ -73,6 +93,7 @@
         Click on her mouth to place the mouth tracker.
         <button type="button" id="calibCancelBtn">cancel</button>
       </div>
+      <div id="listenChip"><span class="pulse"></span><span id="listenChipText">Listening</span></div>
     </div>
   </section>
 
@@ -82,6 +103,7 @@
       <div class="dot" id="connDot" title="Not connected"></div>
       <div id="headerTitle">AI Companion</div>
       <div class="spacer"></div>
+      <button id="micBtn" class="icon" title="Toggle always-listening" aria-pressed="false">🎙</button>
       <button id="muteBtn" class="icon" title="Mute voice" aria-pressed="false">🔊</button>
       <button id="clearBtn" class="icon" title="Clear conversation">🗑</button>
       <button id="settingsBtn" class="icon" title="Settings">⚙</button>

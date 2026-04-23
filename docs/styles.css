@@ -394,6 +394,45 @@ dialog select {
 }
 dialog .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 dialog input[type="checkbox"] { width: auto; margin-right: 6px; vertical-align: -2px; }
+dialog fieldset.fs {
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 8px 12px 12px;
+  margin-top: 14px;
+  color: var(--text);
+}
+dialog fieldset.fs legend { color: var(--accent); font-size: 12px; letter-spacing: .08em; padding: 0 6px; }
+dialog label.inline { display: flex; align-items: center; gap: 4px; margin-top: 10px; color: var(--text); font-size: 13px; }
+
+/* Mic button states */
+#micBtn.listening { color: var(--accent); border-color: var(--accent); }
+#micBtn.awake     { color: #ffe26b;  border-color: #ffe26b; animation: micPulse 1.4s ease-in-out infinite; }
+#micBtn.speaking  { color: #ff7ad9;  border-color: #ff7ad9; }
+@keyframes micPulse {
+  0%,100% { box-shadow: 0 0 0 0 #ffe26b66; }
+  50%     { box-shadow: 0 0 0 6px #ffe26b00; }
+}
+
+/* Listening indicator chip on the stage */
+#listenChip {
+  position: absolute; left: 12px; top: 12px;
+  display: none;
+  align-items: center; gap: 6px;
+  padding: 5px 10px;
+  background: #0b1130cc;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  font-size: 11px; letter-spacing: .18em; text-transform: uppercase;
+  color: var(--muted);
+  z-index: 4;
+}
+#listenChip.on   { display: inline-flex; color: var(--accent); border-color: var(--accent); }
+#listenChip.awake { color: #ffe26b; border-color: #ffe26b; }
+#listenChip .pulse {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: currentColor;
+  animation: pulse 1.2s ease-in-out infinite;
+}
 .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 .dialog-actions button {
   padding: 9px 16px; border: 0; border-radius: 10px;

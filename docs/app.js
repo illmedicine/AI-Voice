@@ -11,6 +11,10 @@ const LS = {
   history:  'aivoice.history',
   muted:    'aivoice.muted',
   mouth:    'aivoice.mouth', // {x,y,w,h} in %
+  wake:     'aivoice.wake',
+  sleep:    'aivoice.sleep',
+  stopWord: 'aivoice.stopWord',
+  autoListen: 'aivoice.autoListen',
 };
 
 const $ = (id) => document.getElementById(id);
@@ -33,6 +37,17 @@ const state = {
   currentAudio: null,
   mood: 'neutral',
   calibrating: false,
+
+  // Voice input / wake word state
+  recognizer: null,
+  listening: false,          // SpeechRecognition session active
+  listenMode: 'off',         // 'off' | 'wake' | 'awake' | 'speaking'
+  wakePhrase:  (localStorage.getItem(LS.wake)  || 'wake up jayla').toLowerCase(),
+  sleepPhrase: (localStorage.getItem(LS.sleep) || 'jayla sleep time').toLowerCase(),
+  stopPhrase:  (localStorage.getItem(LS.stopWord) || 'jayla stop').toLowerCase(),
+  autoListen:  localStorage.getItem(LS.autoListen) === '1',
+  pendingTranscript: '',
+  silenceTimer: 0,
 };
 
 // ---------- DOM ----------
@@ -45,12 +60,17 @@ const els = {
   cfgModelSelect: $('cfgModelSelect'),
   cfgUseTimed:  $('cfgUseTimed'),
   cfgName:      $('cfgName'),
+  cfgWake:      $('cfgWake'),
+  cfgSleep:     $('cfgSleep'),
+  cfgStop:      $('cfgStop'),
+  cfgAutoListen:$('cfgAutoListen'),
   testBtn:      $('testBtn'),
   testResult:   $('testResult'),
   settingsForm: $('settingsForm'),
 
   settingsBtn:  $('settingsBtn'),
   muteBtn:      $('muteBtn'),
+  micBtn:       $('micBtn'),
   clearBtn:     $('clearBtn'),
   sendBtn:      $('sendBtn'),
   input:        $('input'),
@@ -70,6 +90,8 @@ const els = {
   calibHint:    $('calibHint'),
   calibBtn:     $('calibBtn'),
   calibCancelBtn: $('calibCancelBtn'),
+  listenChip:   $('listenChip'),
+  listenChipText: $('listenChipText'),
 };
 
 // ---------- Boot ----------
@@ -85,6 +107,7 @@ function boot() {
   els.settingsBtn.onclick = openSettings;
   els.clearBtn.onclick = clearChat;
   els.muteBtn.onclick = toggleMute;
+  els.micBtn.onclick = toggleListening;
   els.composer.addEventListener('submit', onSend);
   els.input.addEventListener('keydown', onInputKey);
   els.input.addEventListener('input', autoGrow);
@@ -111,6 +134,14 @@ function boot() {
            state.endpoint && state.apiKey ? 'Waiting for prompt' : 'Tap settings to begin');
 
   if (!state.endpoint || !state.apiKey) openSettings();
+
+  // If the user asked to always-listen on load and we have creds, kick it off.
+  // A visible button press is usually required for mic access; we still try,
+  // and fall back gracefully if the browser refuses.
+  if (state.autoListen && state.endpoint && state.apiKey) {
+    // Slight delay so UI paints first.
+    setTimeout(() => { try { startListening(); } catch {} }, 500);
+  }
 }
 
 function applyName() {
@@ -138,9 +169,12 @@ function openSettings() {
   els.cfgVoice.value = state.voiceId;
   els.cfgName.value = state.name;
   els.cfgUseTimed.checked = state.useTimed;
+  els.cfgWake.value  = state.wakePhrase;
+  els.cfgSleep.value = state.sleepPhrase;
+  els.cfgStop.value  = state.stopPhrase;
+  els.cfgAutoListen.checked = state.autoListen;
   els.testResult.textContent = '';
   els.dialog.showModal();
-  // Populate voice/model dropdowns if we have creds configured.
   if (state.endpoint && state.apiKey) {
     populateVoicesAndModels();
   }
@@ -189,17 +223,24 @@ async function populateVoicesAndModels() {
 function saveSettings(e) {
   state.endpoint = els.cfgEndpoint.value.trim().replace(/\/+$/, '');
   state.apiKey   = els.cfgApiKey.value.trim();
-  // Dropdown takes priority, manual override falls back.
   state.voiceId  = (els.cfgVoiceSelect.value || els.cfgVoice.value).trim();
   state.modelId  = els.cfgModelSelect.value.trim();
   state.useTimed = els.cfgUseTimed.checked;
   state.name     = els.cfgName.value.trim() || 'Companion';
+  state.wakePhrase  = (els.cfgWake.value.trim()  || 'wake up jayla').toLowerCase();
+  state.sleepPhrase = (els.cfgSleep.value.trim() || 'jayla sleep time').toLowerCase();
+  state.stopPhrase  = (els.cfgStop.value.trim()  || 'jayla stop').toLowerCase();
+  state.autoListen  = els.cfgAutoListen.checked;
   localStorage.setItem(LS.endpoint, state.endpoint);
   localStorage.setItem(LS.apiKey, state.apiKey);
   localStorage.setItem(LS.voiceId, state.voiceId);
   localStorage.setItem(LS.modelId, state.modelId);
   localStorage.setItem(LS.useTimed, state.useTimed ? '1' : '0');
   localStorage.setItem(LS.name, state.name);
+  localStorage.setItem(LS.wake, state.wakePhrase);
+  localStorage.setItem(LS.sleep, state.sleepPhrase);
+  localStorage.setItem(LS.stopWord, state.stopPhrase);
+  localStorage.setItem(LS.autoListen, state.autoListen ? '1' : '0');
   applyName();
   updateConnectionIndicator();
   setStage('ACTIVE', 'Waiting for prompt');
@@ -403,9 +444,12 @@ async function onSend(e) {
 
     if (!state.muted && j.audio_base64) {
       setStage('SPEAKING', 'Now playing voice');
+      setListenMode('speaking');
       await playAudio(j.audio_base64, j.content_type || 'audio/mpeg', j.alignment);
     }
     setStage('ACTIVE', 'Waiting for prompt');
+    // Return to wake-word listening if we were in a voice session.
+    if (state.listening) setListenMode('wake');
   } catch (err) {
     typingEl.remove();
     setStage('ERROR', 'Check settings or middleware');
@@ -483,17 +527,20 @@ function playAudio(base64, mime, alignment) {
       startLipSync();
     }
 
-    audio.addEventListener('ended', () => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
       URL.revokeObjectURL(url);
       stopLipSync();
       state.currentAudio = null;
       resolve();
-    });
-    audio.addEventListener('error', () => {
-      URL.revokeObjectURL(url);
-      stopLipSync();
-      state.currentAudio = null;
-      resolve();
+    };
+    audio.addEventListener('ended', finish);
+    audio.addEventListener('error', finish);
+    // Interrupt (e.g. "jayla stop") triggers pause; resolve so onSend continues.
+    audio.addEventListener('pause', () => {
+      if (!audio.ended && audio.currentTime > 0) finish();
     });
 
     audio.play().catch(() => { stopLipSync(); resolve(); });
@@ -650,6 +697,194 @@ function stopWaveform() {
   waveRAF = 0;
   const canvas = els.waveform;
   canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+}
+
+// ---------- Voice input + wake/sleep hotwords ----------
+
+function getSpeechRecognition() {
+  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+}
+
+function toggleListening() {
+  if (state.listening) stopListening();
+  else startListening();
+}
+
+function startListening() {
+  const SR = getSpeechRecognition();
+  if (!SR) {
+    alert('Voice input is not supported in this browser. Try Chrome or Edge on desktop/Android.');
+    return;
+  }
+  if (state.recognizer) { try { state.recognizer.stop(); } catch {} state.recognizer = null; }
+
+  const rec = new SR();
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.lang = 'en-US';
+
+  rec.onstart = () => {
+    state.listening = true;
+    state.recognizerRunning = true;
+    els.micBtn.setAttribute('aria-pressed', 'true');
+    setListenMode(state.listenMode === 'awake' ? 'awake' : 'wake');
+  };
+
+  rec.onerror = (e) => {
+    // "no-speech" and "aborted" are routine; don't alarm the user.
+    if (e.error && e.error !== 'no-speech' && e.error !== 'aborted') {
+      console.warn('Speech recognition error:', e.error);
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        alert('Microphone permission was denied. Allow it in the site settings and try again.');
+        state.listening = false;
+        setListenMode('off');
+      }
+    }
+  };
+
+  rec.onend = () => {
+    state.recognizerRunning = false;
+    // Chrome ends the session every ~60s of silence; auto-restart while listening.
+    if (state.listening) {
+      try { rec.start(); } catch { setTimeout(() => { try { rec.start(); } catch {} }, 250); }
+    } else {
+      setListenMode('off');
+    }
+  };
+
+  rec.onresult = onRecognitionResult;
+
+  state.recognizer = rec;
+  try { rec.start(); } catch (err) {
+    console.warn('Could not start recognizer:', err);
+  }
+}
+
+function stopListening() {
+  state.listening = false;
+  const rec = state.recognizer;
+  state.recognizer = null;
+  if (rec) { try { rec.stop(); } catch {} }
+  if (state.silenceTimer) { clearTimeout(state.silenceTimer); state.silenceTimer = null; }
+  setListenMode('off');
+  els.micBtn.setAttribute('aria-pressed', 'false');
+}
+
+function normalizePhrase(s) {
+  return (s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function onRecognitionResult(event) {
+  // Build the newest final transcript and the latest interim.
+  let finalText = '';
+  let interimText = '';
+  for (let i = event.resultIndex; i < event.results.length; i++) {
+    const res = event.results[i];
+    if (res.isFinal) finalText += res[0].transcript + ' ';
+    else interimText += res[0].transcript + ' ';
+  }
+  const heardRaw = (finalText + ' ' + interimText).trim();
+  const heard = normalizePhrase(heardRaw);
+  if (!heard) return;
+
+  const wake  = normalizePhrase(state.wakePhrase);
+  const sleep = normalizePhrase(state.sleepPhrase);
+  const stop  = normalizePhrase(state.stopPhrase);
+
+  // Stop/sleep phrase always interrupts her speech immediately.
+  if (state.listenMode === 'speaking') {
+    if ((stop && heard.includes(stop)) || (sleep && heard.includes(sleep))) {
+      interruptSpeaking();
+      setListenMode('wake');
+    }
+    return;
+  }
+
+  if (state.listenMode === 'wake' || state.listenMode === 'off') {
+    if (wake && heard.includes(wake)) {
+      setListenMode('awake');
+      state.pendingTranscript = '';
+      state.wakeIndex = event.resultIndex + 1; // ignore the wake itself
+    }
+    return;
+  }
+
+  if (state.listenMode === 'awake') {
+    // Sleep phrase immediately puts us back to wake-word mode.
+    if (sleep && heard.includes(sleep)) {
+      if (state.silenceTimer) { clearTimeout(state.silenceTimer); state.silenceTimer = null; }
+      setListenMode('wake');
+      return;
+    }
+
+    // Collect the prompt as final pieces arrive (strip any trailing sleep mention).
+    if (finalText.trim()) {
+      state.pendingTranscript = (state.pendingTranscript + ' ' + finalText).trim();
+    }
+
+    // Reset the silence timer on any speech; fire onSend after a pause.
+    if (state.silenceTimer) clearTimeout(state.silenceTimer);
+    state.silenceTimer = setTimeout(() => {
+      state.silenceTimer = null;
+      const text = cleanPendingTranscript(state.pendingTranscript, wake);
+      state.pendingTranscript = '';
+      if (text && !state.busy) submitVoiceText(text);
+    }, 1400);
+  }
+}
+
+function cleanPendingTranscript(raw, wake) {
+  let t = normalizePhrase(raw);
+  if (wake && t.startsWith(wake)) t = t.slice(wake.length).trim();
+  return t;
+}
+
+function submitVoiceText(text) {
+  els.input.value = text;
+  autoGrow();
+  // Reuse the existing send pipeline.
+  onSend(new Event('submit'));
+}
+
+function interruptSpeaking() {
+  if (state.currentAudio) {
+    try { state.currentAudio.pause(); } catch {}
+    state.currentAudio = null;
+  }
+  stopLipSync();
+  setStage('ACTIVE', 'Stopped');
+  setMood('neutral');
+}
+
+function setListenMode(mode) {
+  state.listenMode = mode;
+  const chip = els.listenChip;
+  const txt = els.listenChipText;
+  const btn = els.micBtn;
+  if (!chip || !btn) return;
+
+  chip.classList.remove('on', 'awake', 'speaking');
+  btn.classList.remove('listening', 'awake', 'speaking');
+
+  if (mode === 'off') {
+    chip.style.display = 'none';
+    return;
+  }
+  chip.style.display = '';
+
+  if (mode === 'wake') {
+    chip.classList.add('on');
+    btn.classList.add('listening');
+    if (txt) txt.textContent = `LISTENING — say "${state.wakePhrase}"`;
+  } else if (mode === 'awake') {
+    chip.classList.add('awake');
+    btn.classList.add('awake');
+    if (txt) txt.textContent = `AWAKE — speak now (say "${state.sleepPhrase}" to rest)`;
+  } else if (mode === 'speaking') {
+    chip.classList.add('speaking');
+    btn.classList.add('speaking');
+    if (txt) txt.textContent = `SPEAKING — say "${state.stopPhrase}" to interrupt`;
+  }
 }
 
 // ---------- Go ----------
