@@ -12,3 +12,4 @@ build/
 coverage/
 *.log
 .raven-data/
+.illy/

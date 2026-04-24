@@ -317,7 +317,7 @@ public class WebRtcManager {
     }
 
     /** SdpObserver adapter. */
-    private abstract static class SimpleSdp implements SdpObserver {
+    private static class SimpleSdp implements SdpObserver {
         @Override public void onCreateSuccess(SessionDescription sdp) {}
         @Override public void onSetSuccess() {}
         @Override public void onCreateFailure(String s) { Log.w(TAG, "createSdp failed: " + s); }
