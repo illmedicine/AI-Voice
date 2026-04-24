@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 import { config, assertConfig } from './config.js';
 import { router } from './routes.js';
+import { ravenRouter } from './raven-routes.js';
 import { attachRealtime } from './realtime.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -77,6 +78,9 @@ const limiter = rateLimit({
     req.path.endsWith('.ico'),
 });
 app.use(limiter);
+
+// Raven app endpoints (Google SSO, profile, rooms, chat history).
+app.use(ravenRouter);
 
 app.use(router);
 

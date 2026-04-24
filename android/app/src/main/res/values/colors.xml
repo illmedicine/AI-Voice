@@ -1,0 +1,14 @@
+<resources>
+    <color name="raven_bg">#0B0D10</color>
+    <color name="raven_surface">#14171C</color>
+    <color name="raven_surface_high">#1C2029</color>
+    <color name="raven_stroke">#242934</color>
+    <color name="raven_text">#E8EAED</color>
+    <color name="raven_text_dim">#9AA0A6</color>
+    <color name="raven_accent">#7C5CFF</color>
+    <color name="raven_accent_dim">#5A3FE0</color>
+    <color name="raven_danger">#E55353</color>
+    <color name="raven_bubble_user">#2A2F3A</color>
+    <color name="raven_bubble_ai">#1A2330</color>
+    <color name="raven_bubble_peer">#23202E</color>
+</resources>
