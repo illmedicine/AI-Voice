@@ -96,6 +96,34 @@ public class RavenApi {
         public RavenUser user;
     }
 
+    /**
+     * Debug-only guest sign-in. Hits POST /raven/auth/dev which is
+     * gated by RAVEN_DEV_MODE=1 on the server. Reuses GoogleSignInResult
+     * since the response shape is identical: { token, user }.
+     */
+    public void signInAsGuest(@Nullable String name, Cb<GoogleSignInResult> cb) {
+        JSONObject body = new JSONObject();
+        try { if (name != null && !name.isEmpty()) body.put("name", name); } catch (JSONException ignored) {}
+        Request req = new Request.Builder()
+                .url(baseUrl + "/raven/auth/dev")
+                .post(RequestBody.create(body.toString(), JSON))
+                .build();
+        http.newCall(req).enqueue(new Callback() {
+            @Override public void onFailure(@NonNull Call call, @NonNull IOException e) { cb.onResult(null, e); }
+            @Override public void onResponse(@NonNull Call call, @NonNull Response response) {
+                try (Response r = response) {
+                    String s = r.body() != null ? r.body().string() : "";
+                    if (!r.isSuccessful()) { cb.onResult(null, new IOException("HTTP " + r.code() + ": " + s)); return; }
+                    JSONObject o = new JSONObject(s);
+                    GoogleSignInResult res = new GoogleSignInResult();
+                    res.token = o.optString("token");
+                    res.user = parseUser(o.optJSONObject("user"));
+                    cb.onResult(res, null);
+                } catch (Exception e) { cb.onResult(null, e); }
+            }
+        });
+    }
+
     public void logout(Cb<Void> cb) {
         Request req = authed(new Request.Builder()
                 .url(baseUrl + "/raven/auth/logout")

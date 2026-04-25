@@ -4,6 +4,7 @@
     <!-- Sign in -->
     <string name="sign_in_tagline">Group AI chat. Together.</string>
     <string name="sign_in_google">Continue with Google</string>
+    <string name="sign_in_guest">Continue as Guest (debug)</string>
     <string name="sign_in_error">Sign-in failed. Please try again.</string>
 
     <!-- Dashboard -->
@@ -27,7 +28,7 @@
     <string name="chat_leave">Leave chat</string>
     <string name="chat_id_copied">Chat ID copied</string>
     <string name="chat_link_copied">Chat link copied</string>
-    <string name="chat_full">Chat is full (max 4 members).</string>
+    <string name="chat_full">Chat is full (max 10 members).</string>
     <string name="chat_not_found">Chat not found.</string>
     <string name="chat_thinking">Raven is thinking\u2026</string>
     <string name="permission_camera_denied">Camera and microphone permissions are required to share.</string>

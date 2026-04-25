@@ -52,6 +52,32 @@ ravenRouter.post('/raven/auth/logout', requireRavenAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// POST /raven/auth/dev  { name? }
+// Debug-only sign-in that mints a session for a synthetic guest user.
+// Enabled when RAVEN_DEV_MODE=1 on the server. Use to bypass Play Protect
+// blocks while prototyping on emulators that can't pass Google Sign-In.
+ravenRouter.post('/raven/auth/dev', (req, res) => {
+  if (process.env.RAVEN_DEV_MODE !== '1') {
+    return res.status(404).json({ error: 'not found' });
+  }
+  try {
+    const rawName = String((req.body && req.body.name) || '').trim().slice(0, 40);
+    const suffix = Math.random().toString(36).slice(2, 8);
+    const id = `guest:${suffix}`;
+    const name = rawName || `Guest ${suffix.toUpperCase()}`;
+    const user = upsertUser({
+      id,
+      email: `${suffix}@guest.raven.local`,
+      name,
+      picture: '',
+    });
+    const token = createSession(user.id);
+    res.json({ token, user });
+  } catch (err) {
+    res.status(500).json({ error: 'guest sign-in failed', detail: String(err.message || err) });
+  }
+});
+
 // ---------- Profile ----------
 
 ravenRouter.get('/raven/me', requireRavenAuth, (req, res) => {

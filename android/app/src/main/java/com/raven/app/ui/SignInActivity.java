@@ -48,6 +48,34 @@ public class SignInActivity extends AppCompatActivity {
 
         credentialManager = CredentialManager.create(this);
         binding.btnGoogle.setOnClickListener(v -> startGoogleSignIn());
+
+        // Debug-only guest bypass for emulators that fail Play Protect.
+        if (BuildConfig.DEBUG) {
+            binding.btnGuest.setVisibility(android.view.View.VISIBLE);
+            binding.btnGuest.setOnClickListener(v -> startGuestSignIn());
+        }
+    }
+
+    private void startGuestSignIn() {
+        binding.progress.setVisibility(android.view.View.VISIBLE);
+        binding.btnGoogle.setEnabled(false);
+        binding.btnGuest.setEnabled(false);
+        RavenApp.get(this).api().signInAsGuest(null, (result, error) -> runOnUiThread(() -> {
+            if (error != null || result == null || result.token == null || result.user == null) {
+                Log.w(TAG, "guest sign-in failed", error);
+                binding.btnGuest.setEnabled(true);
+                fail("Guest sign-in failed. Set RAVEN_DEV_MODE=1 on the server.");
+                return;
+            }
+            RavenApp.get(this).auth().saveSession(
+                    result.token,
+                    result.user.id,
+                    result.user.name,
+                    result.user.email,
+                    result.user.picture);
+            startActivity(new Intent(this, DashboardActivity.class));
+            finish();
+        }));
     }
 
     private void startGoogleSignIn() {

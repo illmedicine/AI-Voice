@@ -79,7 +79,7 @@ export function updateUserPreferences(id, patch) {
 }
 
 // ---------- Chats ----------
-export const MAX_MEMBERS = 4;
+export const MAX_MEMBERS = 10;
 
 function shortId() {
   // 8-char uppercase alphanumeric, friendly to share

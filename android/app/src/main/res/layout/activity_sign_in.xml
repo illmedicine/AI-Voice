@@ -41,6 +41,18 @@
         app:cornerRadius="12dp"
         xmlns:app="http://schemas.android.com/apk/res-auto" />
 
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnGuest"
+        style="@style/Widget.Material3.Button.TextButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="@string/sign_in_guest"
+        android:textAllCaps="false"
+        android:textSize="14sp"
+        android:visibility="gone"
+        xmlns:app="http://schemas.android.com/apk/res-auto" />
+
     <ProgressBar
         android:id="@+id/progress"
         android:layout_width="wrap_content"
