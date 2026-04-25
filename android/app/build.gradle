@@ -17,7 +17,7 @@ android {
         //   RAVEN_BASE_URL=https://your-railway-host
         //   GOOGLE_WEB_CLIENT_ID=xxx.apps.googleusercontent.com
         buildConfigField "String", "RAVEN_BASE_URL",
-                "\"${project.findProperty('RAVEN_BASE_URL') ?: 'https://ai-voice.up.railway.app'}\""
+                "\"${project.findProperty('RAVEN_BASE_URL') ?: 'https://ai-voice-production-9c61.up.railway.app'}\""
         buildConfigField "String", "GOOGLE_WEB_CLIENT_ID",
                 "\"${project.findProperty('GOOGLE_WEB_CLIENT_ID') ?: ''}\""
     }

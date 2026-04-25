@@ -2,6 +2,9 @@ package com.raven.app.ui;
 
 import android.content.Intent;
 import android.os.Bundle;
+import android.os.CancellationSignal;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.widget.Toast;
 
@@ -30,8 +33,15 @@ public class SignInActivity extends AppCompatActivity {
 
     private static final String TAG = "SignInActivity";
 
+    // Hard cap on how long the Credential Manager flow may run. On non-Play-
+    // certified emulators the call can spin forever (and ANR the system),
+    // so we bail out and re-enable the buttons after this many ms.
+    private static final long GOOGLE_SIGN_IN_TIMEOUT_MS = 25_000L;
+
     private ActivitySignInBinding binding;
     private CredentialManager credentialManager;
+    private CancellationSignal googleSignInCancel;
+    private final Handler timeoutHandler = new Handler(Looper.getMainLooper());
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -88,26 +98,43 @@ public class SignInActivity extends AppCompatActivity {
         binding.progress.setVisibility(android.view.View.VISIBLE);
         binding.btnGoogle.setEnabled(false);
 
+        // setAutoSelectEnabled(false): on emulators without a Google account,
+        // auto-select can hang waiting for a credential that will never arrive.
         GetGoogleIdOption option = new GetGoogleIdOption.Builder()
                 .setFilterByAuthorizedAccounts(false)
                 .setServerClientId(clientId)
-                .setAutoSelectEnabled(true)
+                .setAutoSelectEnabled(false)
                 .build();
 
         GetCredentialRequest request = new GetCredentialRequest.Builder()
                 .addCredentialOption(option)
                 .build();
 
+        // Cancellable + timed: if Credential Manager doesn't respond within
+        // GOOGLE_SIGN_IN_TIMEOUT_MS, cancel and surface a clear error so the
+        // user can fall back to Guest (or use a Play-certified device).
+        cancelPendingGoogleSignIn();
+        googleSignInCancel = new CancellationSignal();
+        final CancellationSignal thisCancel = googleSignInCancel;
+        timeoutHandler.postDelayed(() -> {
+            if (!thisCancel.isCanceled()) {
+                thisCancel.cancel();
+                fail("Google sign-in timed out. This emulator may not have Google Play Services. Try the Guest button or a Play-certified device.");
+            }
+        }, GOOGLE_SIGN_IN_TIMEOUT_MS);
+
         credentialManager.getCredentialAsync(
                 this,
                 request,
-                null,
+                googleSignInCancel,
                 getMainExecutor(),
                 new CredentialManagerCallback<GetCredentialResponse, GetCredentialException>() {
                     @Override public void onResult(@NonNull GetCredentialResponse response) {
+                        clearGoogleSignInTimeout();
                         handleCredential(response);
                     }
                     @Override public void onError(@NonNull GetCredentialException e) {
+                        clearGoogleSignInTimeout();
                         Log.w(TAG, "getCredential failed", e);
                         binding.progress.setVisibility(android.view.View.GONE);
                         binding.btnGoogle.setEnabled(true);
@@ -117,6 +144,24 @@ public class SignInActivity extends AppCompatActivity {
                                 Toast.LENGTH_LONG).show();
                     }
                 });
+    }
+
+    private void clearGoogleSignInTimeout() {
+        timeoutHandler.removeCallbacksAndMessages(null);
+    }
+
+    private void cancelPendingGoogleSignIn() {
+        clearGoogleSignInTimeout();
+        if (googleSignInCancel != null && !googleSignInCancel.isCanceled()) {
+            googleSignInCancel.cancel();
+        }
+        googleSignInCancel = null;
+    }
+
+    @Override
+    protected void onDestroy() {
+        cancelPendingGoogleSignIn();
+        super.onDestroy();
     }
 
     private void handleCredential(GetCredentialResponse response) {
