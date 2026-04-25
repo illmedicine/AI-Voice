@@ -12,6 +12,9 @@ import { config, assertConfig } from './config.js';
 import { router } from './routes.js';
 import { ravenRouter } from './raven-routes.js';
 import { attachRealtime } from './realtime.js';
+import { initDb, dbEnabled } from './db.js';
+import { hydrateStore } from './store.js';
+import { hydrateSessions } from './sessions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -96,8 +99,26 @@ app.use((err, req, res, _next) => {
 });
 
 const server = app.listen(config.port, () => {
-  logger.info(`ai-voice-middleware listening on :${config.port}`);
+  logger.info(
+    `ai-voice-middleware listening on :${config.port} ` +
+      `[dev=${process.env.RAVEN_DEV_MODE === '1'} ` +
+      `google=${!!process.env.GOOGLE_CLIENT_IDS} ` +
+      `db=${dbEnabled ? 'postgres' : 'json'}]`,
+  );
 });
+
+// Hydrate persistent state asynchronously (non-blocking startup).
+(async () => {
+  try {
+    if (dbEnabled) {
+      await initDb(logger);
+      await hydrateStore(logger);
+      await hydrateSessions(logger);
+    }
+  } catch (err) {
+    logger.error({ err }, 'database hydration failed; continuing with empty state');
+  }
+})();
 
 // WebSocket presence + WebRTC signaling on /rt
 attachRealtime(server, logger);

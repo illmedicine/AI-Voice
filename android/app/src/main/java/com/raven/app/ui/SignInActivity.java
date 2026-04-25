@@ -64,7 +64,8 @@ public class SignInActivity extends AppCompatActivity {
             if (error != null || result == null || result.token == null || result.user == null) {
                 Log.w(TAG, "guest sign-in failed", error);
                 binding.btnGuest.setEnabled(true);
-                fail("Guest sign-in failed. Set RAVEN_DEV_MODE=1 on the server.");
+                String detail = error != null ? error.getMessage() : "no token returned";
+                fail("Guest sign-in failed: " + detail);
                 return;
             }
             RavenApp.get(this).auth().saveSession(
@@ -110,7 +111,10 @@ public class SignInActivity extends AppCompatActivity {
                         Log.w(TAG, "getCredential failed", e);
                         binding.progress.setVisibility(android.view.View.GONE);
                         binding.btnGoogle.setEnabled(true);
-                        Toast.makeText(SignInActivity.this, R.string.sign_in_error, Toast.LENGTH_LONG).show();
+                        String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                        Toast.makeText(SignInActivity.this,
+                                getString(R.string.sign_in_error) + ": " + detail,
+                                Toast.LENGTH_LONG).show();
                     }
                 });
     }
@@ -131,7 +135,8 @@ public class SignInActivity extends AppCompatActivity {
         RavenApp.get(this).api().signInWithGoogle(idToken, (result, error) -> runOnUiThread(() -> {
             if (error != null || result == null || result.token == null || result.user == null) {
                 Log.w(TAG, "raven sign-in failed", error);
-                fail(getString(R.string.sign_in_error));
+                String detail = error != null ? error.getMessage() : "no token returned";
+                fail(getString(R.string.sign_in_error) + ": " + detail);
                 return;
             }
             RavenApp.get(this).auth().saveSession(

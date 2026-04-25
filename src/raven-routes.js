@@ -19,6 +19,7 @@ import {
 } from './store.js';
 import { grokChat } from './grok.js';
 import { config } from './config.js';
+import { dbEnabled } from './db.js';
 
 export const ravenRouter = Router();
 
@@ -26,6 +27,19 @@ const googleAudiences = (process.env.GOOGLE_CLIENT_IDS || '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
+
+// Diagnostic: lets the Android app and developers verify backend wiring
+// without exposing secrets. Safe to call unauthenticated.
+ravenRouter.get('/raven/config', (_req, res) => {
+  res.json({
+    devMode: process.env.RAVEN_DEV_MODE === '1',
+    googleConfigured: googleAudiences.length > 0,
+    googleAudienceCount: googleAudiences.length,
+    dbBackend: dbEnabled ? 'postgres' : 'json',
+    maxMembers: 10,
+    version: process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) || 'dev',
+  });
+});
 
 // ---------- Auth ----------
 

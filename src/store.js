@@ -1,9 +1,18 @@
-// Tiny JSON file-backed store for user profiles + chat history.
-// For production, swap the adapter for Postgres/Redis — the API stays the same.
+// User profiles + chat history. Memory-resident, hydrated from Postgres on
+// boot when DATABASE_URL is set; otherwise persists to a JSON file. The
+// public API stays synchronous — DB writes happen as fire-and-forget tasks.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import {
+  dbEnabled,
+  loadAllUsers,
+  loadAllChats,
+  upsertUserRow,
+  upsertChatRow,
+  deleteChatRow,
+} from './db.js';
 
 const DATA_DIR = process.env.RAVEN_DATA_DIR || path.resolve(process.cwd(), '.raven-data');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
@@ -29,14 +38,12 @@ function saveJson(file, data) {
   fs.renameSync(tmp, file);
 }
 
-// users: { [userId]: { id, email, name, picture, voiceId?, preferences, createdAt, updatedAt } }
-// chats: { [chatId]: { id, ownerId, title, members: [userId], createdAt, updatedAt, lastMessageAt, messages: [...] } }
-
-let users = loadJson(USERS_FILE, {});
-let chats = loadJson(CHATS_FILE, {});
+let users = dbEnabled ? {} : loadJson(USERS_FILE, {});
+let chats = dbEnabled ? {} : loadJson(CHATS_FILE, {});
 
 let flushTimer = null;
 function scheduleFlush() {
+  if (dbEnabled) return;
   if (flushTimer) return;
   flushTimer = setTimeout(() => {
     flushTimer = null;
@@ -44,6 +51,27 @@ function scheduleFlush() {
     try { saveJson(CHATS_FILE, chats); } catch {}
   }, 250);
   flushTimer.unref?.();
+}
+
+function persistUser(u) {
+  if (!dbEnabled) return scheduleFlush();
+  upsertUserRow(u).catch((e) => console.error('[store] upsertUser', e));
+}
+function persistChat(c) {
+  if (!dbEnabled) return scheduleFlush();
+  if (!c) return;
+  upsertChatRow(c).catch((e) => console.error('[store] upsertChat', e));
+}
+function persistChatDelete(id) {
+  if (!dbEnabled) return scheduleFlush();
+  deleteChatRow(id).catch((e) => console.error('[store] deleteChat', e));
+}
+
+export async function hydrateStore(logger) {
+  if (!dbEnabled) return;
+  users = await loadAllUsers();
+  chats = await loadAllChats();
+  logger?.info?.(`[store] hydrated ${Object.keys(users).length} users, ${Object.keys(chats).length} chats from postgres`);
 }
 
 // ---------- Users ----------
@@ -61,7 +89,7 @@ export function upsertUser({ id, email, name, picture }) {
     createdAt: existing.createdAt ?? now,
     updatedAt: now,
   };
-  scheduleFlush();
+  persistUser(users[id]);
   return users[id];
 }
 
@@ -74,7 +102,7 @@ export function updateUserPreferences(id, patch) {
   if (!u) return null;
   u.preferences = { ...(u.preferences || {}), ...(patch || {}) };
   u.updatedAt = Date.now();
-  scheduleFlush();
+  persistUser(u);
   return u;
 }
 
@@ -82,7 +110,6 @@ export function updateUserPreferences(id, patch) {
 export const MAX_MEMBERS = 10;
 
 function shortId() {
-  // 8-char uppercase alphanumeric, friendly to share
   return crypto.randomBytes(6).toString('base64url').replace(/[_-]/g, '').slice(0, 8).toUpperCase();
 }
 
@@ -101,7 +128,7 @@ export function createChat({ ownerId, title }) {
     lastMessageAt: now,
     messages: [],
   };
-  scheduleFlush();
+  persistChat(chats[id]);
   return chats[id];
 }
 
@@ -116,7 +143,7 @@ export function joinChat(id, userId) {
   if (chat.members.length >= MAX_MEMBERS) return { error: 'full' };
   chat.members.push(userId);
   chat.updatedAt = Date.now();
-  scheduleFlush();
+  persistChat(chat);
   return { chat };
 }
 
@@ -125,7 +152,7 @@ export function leaveChat(id, userId) {
   if (!chat) return null;
   chat.members = chat.members.filter((m) => m !== userId);
   chat.updatedAt = Date.now();
-  scheduleFlush();
+  persistChat(chat);
   return chat;
 }
 
@@ -138,11 +165,10 @@ export function appendMessage(id, msg) {
     ...msg,
   };
   chat.messages.push(entry);
-  // Cap messages per chat to avoid unbounded growth.
   if (chat.messages.length > 500) chat.messages.splice(0, chat.messages.length - 500);
   chat.lastMessageAt = entry.ts;
   chat.updatedAt = entry.ts;
-  scheduleFlush();
+  persistChat(chat);
   return entry;
 }
 
@@ -175,7 +201,7 @@ export function renameChat(id, userId, title) {
   if (chat.ownerId !== userId) return { error: 'forbidden' };
   chat.title = String(title || '').slice(0, 120) || chat.title;
   chat.updatedAt = Date.now();
-  scheduleFlush();
+  persistChat(chat);
   return chat;
 }
 
@@ -184,6 +210,6 @@ export function deleteChat(id, userId) {
   if (!chat) return null;
   if (chat.ownerId !== userId) return { error: 'forbidden' };
   delete chats[id];
-  scheduleFlush();
+  persistChatDelete(id);
   return { ok: true };
 }
