@@ -1,7 +1,6 @@
 package com.raven.app.ui;
 
 import android.Manifest;
-import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -10,7 +9,11 @@ import android.content.pm.PackageManager;
 import android.media.AudioAttributes;
 import android.media.MediaPlayer;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
 import android.util.Log;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
@@ -18,10 +21,9 @@ import android.widget.PopupMenu;
 import android.widget.Toast;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Locale;
 
-import androidx.activity.result.ActivityResultLauncher;
-import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
@@ -41,8 +43,6 @@ import com.raven.app.ui.adapter.VideoTileAdapter;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.webrtc.VideoTrack;
-
-import java.util.ArrayList;
 
 public class ChatActivity extends AppCompatActivity implements RealtimeSocket.Listener, WebRtcManager.Listener {
 
@@ -68,9 +68,16 @@ public class ChatActivity extends AppCompatActivity implements RealtimeSocket.Li
     // ElevenLabs voice playback for Raven's replies (streams /raven/tts).
     private MediaPlayer ravenPlayer;
     private File ravenAudioFile;
+    private boolean ravenSpeaking;
 
-    // Speech-to-text result handler.
-    private ActivityResultLauncher<Intent> speechLauncher;
+    // In-process speech recognizer for hands-free conversation (Grok-style).
+    private SpeechRecognizer recognizer;
+    private boolean recognizerListening;
+    private boolean handsFreeMode;
+    private boolean awaitingReply;
+    private boolean activityStopped;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Runnable resumeListenRunnable = this::resumeListeningIfNeeded;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -109,22 +116,7 @@ public class ChatActivity extends AppCompatActivity implements RealtimeSocket.Li
             return false;
         });
         binding.btnCamera.setOnClickListener(v -> toggleCamera());
-        binding.btnMic.setOnClickListener(v -> startSpeechInput());
-
-        // Speech-to-text result: append/replace text in the input box.
-        speechLauncher = registerForActivityResult(
-                new ActivityResultContracts.StartActivityForResult(),
-                result -> {
-                    if (result.getResultCode() != RESULT_OK || result.getData() == null) return;
-                    java.util.ArrayList<String> matches = result.getData()
-                            .getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
-                    if (matches == null || matches.isEmpty()) return;
-                    String spoken = matches.get(0);
-                    if (spoken == null || spoken.isEmpty()) return;
-                    binding.input.setText(spoken);
-                    binding.input.setSelection(binding.input.getText().length());
-                    sendCurrent();
-                });
+        binding.btnMic.setOnClickListener(v -> toggleHandsFree());
 
         // Initialize WebRTC (factory created lazily by manager) + socket.
         socket = new RealtimeSocket(RavenApp.get(this).api().baseUrl());
@@ -159,7 +151,15 @@ public class ChatActivity extends AppCompatActivity implements RealtimeSocket.Li
 
     private void speakRaven(String text) {
         String clean = stripMoodTag(text);
-        if (clean.isEmpty()) return;
+        if (clean.isEmpty()) {
+            // Nothing to say — but still resume listening if hands-free.
+            scheduleResumeListening();
+            return;
+        }
+        ravenSpeaking = true;
+        // Make sure we're not capturing audio while Raven is talking, otherwise
+        // the recognizer hears Raven and feeds it back into the conversation.
+        stopListening();
         File out = new File(getCacheDir(), "raven-tts-" + System.currentTimeMillis() + ".mp3");
         // Hard-coded ElevenLabs voice ID for "Raven". Server falls back to its
         // configured default if this is null/empty, but we pin it here so the
@@ -167,6 +167,8 @@ public class ChatActivity extends AppCompatActivity implements RealtimeSocket.Li
         RavenApp.get(this).api().streamTts(clean, "CBCytkseYP5LYhTeh4Hd", out, (file, err) -> runOnUiThread(() -> {
             if (err != null || file == null) {
                 Log.w(TAG, "raven tts fetch failed", err);
+                ravenSpeaking = false;
+                scheduleResumeListening();
                 return;
             }
             playRavenAudio(file);
@@ -178,30 +180,55 @@ public class ChatActivity extends AppCompatActivity implements RealtimeSocket.Li
         releaseRavenPlayer();
         ravenAudioFile = file;
         try {
-            ravenPlayer = new MediaPlayer();
-            ravenPlayer.setAudioAttributes(new AudioAttributes.Builder()
+            final MediaPlayer mp = new MediaPlayer();
+            ravenPlayer = mp;
+            mp.setAudioAttributes(new AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build());
-            ravenPlayer.setDataSource(file.getAbsolutePath());
-            ravenPlayer.setOnCompletionListener(mp -> releaseRavenPlayer());
-            ravenPlayer.setOnErrorListener((mp, what, extra) -> {
+            mp.setDataSource(file.getAbsolutePath());
+            mp.setOnCompletionListener(p -> mainHandler.post(() -> {
+                if (ravenPlayer == p) {
+                    ravenSpeaking = false;
+                    releaseRavenPlayer();
+                    scheduleResumeListening();
+                }
+            }));
+            mp.setOnErrorListener((p, what, extra) -> {
                 Log.w(TAG, "MediaPlayer error what=" + what + " extra=" + extra);
-                releaseRavenPlayer();
+                mainHandler.post(() -> {
+                    if (ravenPlayer == p) {
+                        ravenSpeaking = false;
+                        releaseRavenPlayer();
+                        scheduleResumeListening();
+                    }
+                });
                 return true;
             });
-            ravenPlayer.setOnPreparedListener(MediaPlayer::start);
-            ravenPlayer.prepareAsync();
+            mp.setOnPreparedListener(p -> {
+                if (activityStopped || ravenPlayer != p) return;
+                try { p.start(); } catch (IllegalStateException ise) {
+                    Log.w(TAG, "MediaPlayer.start failed", ise);
+                    ravenSpeaking = false;
+                    releaseRavenPlayer();
+                    scheduleResumeListening();
+                }
+            });
+            mp.prepareAsync();
         } catch (Exception e) {
             Log.w(TAG, "playRavenAudio failed", e);
+            ravenSpeaking = false;
             releaseRavenPlayer();
+            scheduleResumeListening();
         }
     }
 
     private void releaseRavenPlayer() {
         if (ravenPlayer != null) {
-            try { ravenPlayer.release(); } catch (Exception ignored) {}
+            MediaPlayer mp = ravenPlayer;
             ravenPlayer = null;
+            try { mp.reset(); } catch (Exception ignored) {}
+            try { mp.release(); } catch (Exception ignored) {}
         }
         if (ravenAudioFile != null) {
             try { ravenAudioFile.delete(); } catch (Exception ignored) {}
@@ -209,27 +236,142 @@ public class ChatActivity extends AppCompatActivity implements RealtimeSocket.Li
         }
     }
 
-    // ---------- Speech-to-text ----------
-    private void startSpeechInput() {
-        // RECORD_AUDIO is technically not required for RecognizerIntent (the
-        // system speech UI handles it), but requesting it up front avoids
-        // edge cases on some OEMs and keeps parity with the camera flow.
+    // ---------- Hands-free voice loop (Grok-style) ----------
+
+    /** Mic button: toggle continuous listening. */
+    private void toggleHandsFree() {
+        if (handsFreeMode) {
+            handsFreeMode = false;
+            stopListening();
+            mainHandler.removeCallbacks(resumeListenRunnable);
+            updateMicVisual();
+            Toast.makeText(this, R.string.chat_handsfree_off, Toast.LENGTH_SHORT).show();
+            return;
+        }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this,
                     new String[]{Manifest.permission.RECORD_AUDIO}, REQ_MIC_PERM);
             return;
         }
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            Toast.makeText(this, R.string.chat_voice_unavailable, Toast.LENGTH_LONG).show();
+            return;
+        }
+        handsFreeMode = true;
+        Toast.makeText(this, R.string.chat_handsfree_on, Toast.LENGTH_SHORT).show();
+        updateMicVisual();
+        scheduleResumeListening();
+    }
+
+    private void updateMicVisual() {
+        binding.btnMic.setSelected(handsFreeMode);
+        binding.btnMic.setContentDescription(
+                getString(handsFreeMode ? R.string.chat_listening : R.string.chat_mic));
+    }
+
+    private void scheduleResumeListening() {
+        mainHandler.removeCallbacks(resumeListenRunnable);
+        // Brief delay so the mic doesn't pick up the tail of Raven's audio.
+        mainHandler.postDelayed(resumeListenRunnable, 250);
+    }
+
+    private void resumeListeningIfNeeded() {
+        if (!handsFreeMode || ravenSpeaking || awaitingReply || activityStopped) return;
+        startListening();
+    }
+
+    private void ensureRecognizer() {
+        if (recognizer != null) return;
+        recognizer = SpeechRecognizer.createSpeechRecognizer(this);
+        recognizer.setRecognitionListener(new RecognitionListener() {
+            @Override public void onReadyForSpeech(Bundle params) {}
+            @Override public void onBeginningOfSpeech() {}
+            @Override public void onRmsChanged(float rmsdB) {}
+            @Override public void onBufferReceived(byte[] buffer) {}
+            @Override public void onEndOfSpeech() { recognizerListening = false; }
+            @Override public void onPartialResults(Bundle partialResults) {}
+            @Override public void onEvent(int eventType, Bundle params) {}
+
+            @Override public void onError(int error) {
+                recognizerListening = false;
+                Log.d(TAG, "recognizer onError=" + error);
+                // Common transient errors in hands-free: NO_MATCH, SPEECH_TIMEOUT,
+                // RECOGNIZER_BUSY. Just resume listening shortly.
+                if (handsFreeMode && !ravenSpeaking && !awaitingReply && !activityStopped) {
+                    if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS
+                            || error == SpeechRecognizer.ERROR_CLIENT) {
+                        // Don't busy-loop on hard errors.
+                        handsFreeMode = false;
+                        updateMicVisual();
+                        Toast.makeText(ChatActivity.this, R.string.chat_voice_unavailable,
+                                Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    mainHandler.postDelayed(resumeListenRunnable, 600);
+                }
+            }
+
+            @Override public void onResults(Bundle results) {
+                recognizerListening = false;
+                ArrayList<String> matches = results.getStringArrayList(
+                        SpeechRecognizer.RESULTS_RECOGNITION);
+                if (matches == null || matches.isEmpty()) {
+                    scheduleResumeListening();
+                    return;
+                }
+                String spoken = matches.get(0);
+                if (spoken == null || spoken.trim().isEmpty()) {
+                    scheduleResumeListening();
+                    return;
+                }
+                binding.input.setText(spoken);
+                binding.input.setSelection(binding.input.getText().length());
+                sendCurrent();
+            }
+        });
+    }
+
+    private void startListening() {
+        if (recognizerListening || ravenSpeaking || awaitingReply || activityStopped) return;
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        ensureRecognizer();
+        if (recognizer == null) return;
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                 RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault());
-        intent.putExtra(RecognizerIntent.EXTRA_PROMPT, getString(R.string.chat_voice_prompt));
+        intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
+        intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false);
+        intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L);
+        intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L);
+        intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1500L);
         try {
-            speechLauncher.launch(intent);
-        } catch (ActivityNotFoundException e) {
-            Toast.makeText(this, R.string.chat_voice_unavailable, Toast.LENGTH_LONG).show();
+            recognizer.startListening(intent);
+            recognizerListening = true;
+        } catch (Exception e) {
+            Log.w(TAG, "startListening failed", e);
+            recognizerListening = false;
+            if (handsFreeMode) mainHandler.postDelayed(resumeListenRunnable, 800);
         }
+    }
+
+    private void stopListening() {
+        if (recognizer == null) return;
+        try { recognizer.cancel(); } catch (Exception ignored) {}
+        recognizerListening = false;
+    }
+
+    private void releaseRecognizer() {
+        if (recognizer != null) {
+            try { recognizer.cancel(); } catch (Exception ignored) {}
+            try { recognizer.destroy(); } catch (Exception ignored) {}
+            recognizer = null;
+        }
+        recognizerListening = false;
     }
 
     private void loadHistory() {
@@ -260,8 +402,15 @@ public class ChatActivity extends AppCompatActivity implements RealtimeSocket.Li
 
     private void sendCurrent() {
         String text = binding.input.getText().toString().trim();
-        if (text.isEmpty()) return;
+        if (text.isEmpty()) {
+            scheduleResumeListening();
+            return;
+        }
         binding.input.setText("");
+        // While waiting for Raven's reply, suspend the mic so we don't capture
+        // ambient noise or the keyboard click.
+        awaitingReply = true;
+        stopListening();
 
         // Optimistic local echo (will be superseded by server-persisted copy on history reload).
         ChatMessage mine = new ChatMessage();
@@ -279,8 +428,10 @@ public class ChatActivity extends AppCompatActivity implements RealtimeSocket.Li
         // Ask Raven for a reply (persisted server-side).
         String displayName = RavenApp.get(this).auth().userName();
         RavenApp.get(this).api().ask(chatId, text, displayName, (res, err) -> runOnUiThread(() -> {
+            awaitingReply = false;
             if (err != null || res == null || res.assistant == null) {
                 Toast.makeText(this, "Raven couldn't reply right now.", Toast.LENGTH_SHORT).show();
+                scheduleResumeListening();
                 return;
             }
             messageAdapter.add(res.assistant);
@@ -369,7 +520,7 @@ public class ChatActivity extends AppCompatActivity implements RealtimeSocket.Li
         } else if (requestCode == REQ_MIC_PERM) {
             boolean granted = grantResults.length > 0
                     && grantResults[0] == PackageManager.PERMISSION_GRANTED;
-            if (granted) startSpeechInput();
+            if (granted) toggleHandsFree();
             else Toast.makeText(this, R.string.chat_voice_unavailable, Toast.LENGTH_SHORT).show();
         }
     }
@@ -474,7 +625,24 @@ public class ChatActivity extends AppCompatActivity implements RealtimeSocket.Li
 
     // ---------- Lifecycle ----------
     @Override
+    protected void onStart() {
+        super.onStart();
+        activityStopped = false;
+    }
+
+    @Override
+    protected void onStop() {
+        activityStopped = true;
+        // Don't hold the mic in the background.
+        stopListening();
+        mainHandler.removeCallbacks(resumeListenRunnable);
+        super.onStop();
+    }
+
+    @Override
     protected void onDestroy() {
+        mainHandler.removeCallbacks(resumeListenRunnable);
+        releaseRecognizer();
         releaseRavenPlayer();
         if (socket != null) socket.close();
         if (webrtc != null) webrtc.dispose();

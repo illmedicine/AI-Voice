@@ -35,5 +35,8 @@
     <string name="chat_voice_unavailable">Voice input not available on this device.</string>
     <string name="chat_voice_prompt">Speak now\u2026</string>
     <string name="chat_tts_unavailable">Text-to-speech not available on this device.</string>
+    <string name="chat_handsfree_on">Hands-free conversation on. Tap mic to stop.</string>
+    <string name="chat_handsfree_off">Hands-free conversation off.</string>
+    <string name="chat_listening">Listening\u2026</string>
     <string name="permission_camera_denied">Camera and microphone permissions are required to share.</string>
 </resources>

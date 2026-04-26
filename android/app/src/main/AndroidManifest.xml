@@ -11,6 +11,14 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
+    <!-- Required on Android 11+ for SpeechRecognizer to find an installed
+         recognition service via package visibility. -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
+
     <application
         android:name=".RavenApp"
         android:allowBackup="false"
