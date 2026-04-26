@@ -1,13 +1,17 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <style name="Theme.Raven" parent="Theme.Material3.Dark.NoActionBar">
+    <style name="Theme.Raven" parent="Theme.Material3.Light.NoActionBar">
         <item name="colorPrimary">@color/raven_accent</item>
-        <item name="colorOnPrimary">@color/raven_text</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
         <item name="colorSecondary">@color/raven_accent_dim</item>
+        <item name="colorOnSecondary">#FFFFFF</item>
         <item name="android:colorBackground">@color/raven_bg</item>
         <item name="colorSurface">@color/raven_surface</item>
+        <item name="colorOnSurface">@color/raven_text</item>
         <item name="android:windowBackground">@color/raven_bg</item>
         <item name="android:statusBarColor">@color/raven_bg</item>
         <item name="android:navigationBarColor">@color/raven_bg</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="m">true</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">true</item>
         <item name="android:textColorPrimary">@color/raven_text</item>
         <item name="android:textColorSecondary">@color/raven_text_dim</item>
     </style>

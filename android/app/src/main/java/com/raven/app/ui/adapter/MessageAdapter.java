@@ -4,7 +4,6 @@ import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -33,7 +32,9 @@ public class MessageAdapter extends RecyclerView.Adapter<MessageAdapter.VH> {
 
     public void replaceAll(List<ChatMessage> next) {
         items.clear();
-        items.addAll(next);
+        if (next != null) {
+            for (ChatMessage m : next) if (m != null) items.add(m);
+        }
         notifyDataSetChanged();
     }
 
@@ -52,25 +53,36 @@ public class MessageAdapter extends RecyclerView.Adapter<MessageAdapter.VH> {
         boolean assistant = "assistant".equals(m.role);
         boolean self = !assistant && selfUserId.equals(m.userId);
 
-        LinearLayout.LayoutParams rowLp = (LinearLayout.LayoutParams) h.itemView.getLayoutParams();
+        // The item root is a LinearLayout (see item_message.xml). Its layout params
+        // come from the RecyclerView (RecyclerView.LayoutParams) — do NOT cast them
+        // to LinearLayout.LayoutParams or you'll get a ClassCastException.
         LinearLayout row = (LinearLayout) h.itemView;
         row.setGravity(self ? Gravity.END : Gravity.START);
 
         h.sender.setText(assistant ? "Raven" : (m.name == null || m.name.isEmpty() ? "User" : m.name));
-        h.bubble.setText(m.text == null ? "" : m.text);
+        h.bubble.setText(stripMoodTag(m.text));
 
         int bg = assistant ? R.drawable.bg_bubble_ai
                 : self ? R.drawable.bg_bubble_user : R.drawable.bg_bubble_peer;
         h.bubble.setBackgroundResource(bg);
 
-        // Align bubble to the correct side.
-        FrameLayout.LayoutParams bubbleLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        // Align bubble + sender label to the correct side within the LinearLayout row.
         LinearLayout.LayoutParams ll = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         ll.gravity = self ? Gravity.END : Gravity.START;
         h.bubble.setLayoutParams(ll);
         h.sender.setLayoutParams(ll);
+    }
+
+    /** Raven's replies sometimes start with "[mood: happy]" — hide that from the UI. */
+    private static String stripMoodTag(String s) {
+        if (s == null) return "";
+        String t = s.trim();
+        if (t.startsWith("[mood:")) {
+            int end = t.indexOf(']');
+            if (end > 0) return t.substring(end + 1).trim();
+        }
+        return s;
     }
 
     @Override public int getItemCount() { return items.size(); }

@@ -31,5 +31,9 @@
     <string name="chat_full">Chat is full (max 10 members).</string>
     <string name="chat_not_found">Chat not found.</string>
     <string name="chat_thinking">Raven is thinking\u2026</string>
+    <string name="chat_mic">Speak to Raven</string>
+    <string name="chat_voice_unavailable">Voice input not available on this device.</string>
+    <string name="chat_voice_prompt">Speak now\u2026</string>
+    <string name="chat_tts_unavailable">Text-to-speech not available on this device.</string>
     <string name="permission_camera_denied">Camera and microphone permissions are required to share.</string>
 </resources>

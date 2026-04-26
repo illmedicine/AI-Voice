@@ -1,17 +1,27 @@
 package com.raven.app.ui;
 
 import android.Manifest;
+import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.media.AudioAttributes;
+import android.media.MediaPlayer;
 import android.os.Bundle;
+import android.speech.RecognizerIntent;
+import android.util.Log;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
 import android.widget.PopupMenu;
 import android.widget.Toast;
 
+import java.io.File;
+import java.util.Locale;
+
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
@@ -40,6 +50,8 @@ public class ChatActivity extends AppCompatActivity implements RealtimeSocket.Li
     public static final String EXTRA_CHAT_TITLE = "chat_title";
 
     private static final int REQ_PERMS = 42;
+    private static final int REQ_MIC_PERM = 43;
+    private static final String TAG = "ChatActivity";
 
     private ActivityChatBinding binding;
     private MessageAdapter messageAdapter;
@@ -52,6 +64,13 @@ public class ChatActivity extends AppCompatActivity implements RealtimeSocket.Li
     private WebRtcManager webrtc;
 
     private boolean cameraOn;
+
+    // ElevenLabs voice playback for Raven's replies (streams /raven/tts).
+    private MediaPlayer ravenPlayer;
+    private File ravenAudioFile;
+
+    // Speech-to-text result handler.
+    private ActivityResultLauncher<Intent> speechLauncher;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -90,6 +109,22 @@ public class ChatActivity extends AppCompatActivity implements RealtimeSocket.Li
             return false;
         });
         binding.btnCamera.setOnClickListener(v -> toggleCamera());
+        binding.btnMic.setOnClickListener(v -> startSpeechInput());
+
+        // Speech-to-text result: append/replace text in the input box.
+        speechLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    if (result.getResultCode() != RESULT_OK || result.getData() == null) return;
+                    java.util.ArrayList<String> matches = result.getData()
+                            .getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+                    if (matches == null || matches.isEmpty()) return;
+                    String spoken = matches.get(0);
+                    if (spoken == null || spoken.isEmpty()) return;
+                    binding.input.setText(spoken);
+                    binding.input.setSelection(binding.input.getText().length());
+                    sendCurrent();
+                });
 
         // Initialize WebRTC (factory created lazily by manager) + socket.
         socket = new RealtimeSocket(RavenApp.get(this).api().baseUrl());
@@ -103,20 +138,117 @@ public class ChatActivity extends AppCompatActivity implements RealtimeSocket.Li
         binding.videoGrid.setLayoutManager(grid);
         binding.videoGrid.setAdapter(videoAdapter);
 
+        // Initialize on-device TTS. Uses the system engine — works on emulators
+        // and avoids needing audio over WebRTC for the AI voice.
+        // (TTS now uses ElevenLabs via /raven/tts — see speakRaven below.)
+
         loadHistory();
         connectSocket();
     }
 
+    /** Strip a leading "[mood: X]" tag from Raven's reply before speaking it. */
+    private static String stripMoodTag(String s) {
+        if (s == null) return "";
+        String t = s.trim();
+        if (t.startsWith("[mood:")) {
+            int end = t.indexOf(']');
+            if (end > 0) return t.substring(end + 1).trim();
+        }
+        return s;
+    }
+
+    private void speakRaven(String text) {
+        String clean = stripMoodTag(text);
+        if (clean.isEmpty()) return;
+        File out = new File(getCacheDir(), "raven-tts-" + System.currentTimeMillis() + ".mp3");
+        // Hard-coded ElevenLabs voice ID for "Raven". Server falls back to its
+        // configured default if this is null/empty, but we pin it here so the
+        // client always gets the same voice regardless of server env.
+        RavenApp.get(this).api().streamTts(clean, "CBCytkseYP5LYhTeh4Hd", out, (file, err) -> runOnUiThread(() -> {
+            if (err != null || file == null) {
+                Log.w(TAG, "raven tts fetch failed", err);
+                return;
+            }
+            playRavenAudio(file);
+        }));
+    }
+
+    private void playRavenAudio(File file) {
+        // Stop any previous playback and clean up its temp file.
+        releaseRavenPlayer();
+        ravenAudioFile = file;
+        try {
+            ravenPlayer = new MediaPlayer();
+            ravenPlayer.setAudioAttributes(new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build());
+            ravenPlayer.setDataSource(file.getAbsolutePath());
+            ravenPlayer.setOnCompletionListener(mp -> releaseRavenPlayer());
+            ravenPlayer.setOnErrorListener((mp, what, extra) -> {
+                Log.w(TAG, "MediaPlayer error what=" + what + " extra=" + extra);
+                releaseRavenPlayer();
+                return true;
+            });
+            ravenPlayer.setOnPreparedListener(MediaPlayer::start);
+            ravenPlayer.prepareAsync();
+        } catch (Exception e) {
+            Log.w(TAG, "playRavenAudio failed", e);
+            releaseRavenPlayer();
+        }
+    }
+
+    private void releaseRavenPlayer() {
+        if (ravenPlayer != null) {
+            try { ravenPlayer.release(); } catch (Exception ignored) {}
+            ravenPlayer = null;
+        }
+        if (ravenAudioFile != null) {
+            try { ravenAudioFile.delete(); } catch (Exception ignored) {}
+            ravenAudioFile = null;
+        }
+    }
+
+    // ---------- Speech-to-text ----------
+    private void startSpeechInput() {
+        // RECORD_AUDIO is technically not required for RecognizerIntent (the
+        // system speech UI handles it), but requesting it up front avoids
+        // edge cases on some OEMs and keeps parity with the camera flow.
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this,
+                    new String[]{Manifest.permission.RECORD_AUDIO}, REQ_MIC_PERM);
+            return;
+        }
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault());
+        intent.putExtra(RecognizerIntent.EXTRA_PROMPT, getString(R.string.chat_voice_prompt));
+        try {
+            speechLauncher.launch(intent);
+        } catch (ActivityNotFoundException e) {
+            Toast.makeText(this, R.string.chat_voice_unavailable, Toast.LENGTH_LONG).show();
+        }
+    }
+
     private void loadHistory() {
         RavenApp.get(this).api().getChat(chatId, (detail, err) -> runOnUiThread(() -> {
-            if (err != null || detail == null) return;
+            if (err != null) {
+                Toast.makeText(this, "Couldn't load chat history.", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (detail == null) return;
             if (detail.title != null && !detail.title.isEmpty()) {
                 chatTitle = detail.title;
                 binding.titleText.setText(chatTitle);
             }
-            binding.subtitleText.setText(chatId + " · " + detail.members.size() + "/4");
-            messageAdapter.replaceAll(detail.messages);
-            scrollToBottom();
+            int memberCount = detail.members == null ? 0 : detail.members.size();
+            binding.subtitleText.setText(chatId + " · " + memberCount + "/4");
+            if (detail.messages != null) {
+                messageAdapter.replaceAll(detail.messages);
+                scrollToBottom();
+            }
         }));
     }
 
@@ -153,6 +285,7 @@ public class ChatActivity extends AppCompatActivity implements RealtimeSocket.Li
             }
             messageAdapter.add(res.assistant);
             scrollToBottom();
+            speakRaven(res.assistant.text);
         }));
     }
 
@@ -228,11 +361,17 @@ public class ChatActivity extends AppCompatActivity implements RealtimeSocket.Li
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode != REQ_PERMS) return;
-        boolean granted = grantResults.length > 0;
-        for (int g : grantResults) if (g != PackageManager.PERMISSION_GRANTED) granted = false;
-        if (granted) startCamera();
-        else Toast.makeText(this, R.string.permission_camera_denied, Toast.LENGTH_LONG).show();
+        if (requestCode == REQ_PERMS) {
+            boolean granted = grantResults.length > 0;
+            for (int g : grantResults) if (g != PackageManager.PERMISSION_GRANTED) granted = false;
+            if (granted) startCamera();
+            else Toast.makeText(this, R.string.permission_camera_denied, Toast.LENGTH_LONG).show();
+        } else if (requestCode == REQ_MIC_PERM) {
+            boolean granted = grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            if (granted) startSpeechInput();
+            else Toast.makeText(this, R.string.chat_voice_unavailable, Toast.LENGTH_SHORT).show();
+        }
     }
 
     // ---------- Socket events (main thread) ----------
@@ -336,6 +475,7 @@ public class ChatActivity extends AppCompatActivity implements RealtimeSocket.Li
     // ---------- Lifecycle ----------
     @Override
     protected void onDestroy() {
+        releaseRavenPlayer();
         if (socket != null) socket.close();
         if (webrtc != null) webrtc.dispose();
         super.onDestroy();

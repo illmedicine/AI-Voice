@@ -1,14 +1,16 @@
 <resources>
-    <color name="raven_bg">#0B0D10</color>
-    <color name="raven_surface">#14171C</color>
-    <color name="raven_surface_high">#1C2029</color>
-    <color name="raven_stroke">#242934</color>
-    <color name="raven_text">#E8EAED</color>
-    <color name="raven_text_dim">#9AA0A6</color>
-    <color name="raven_accent">#7C5CFF</color>
+    <!-- Light, friendly palette. Same semantic names so all drawables/layouts
+         pick the new colors up automatically. -->
+    <color name="raven_bg">#FFF8F2</color>            <!-- warm cream background -->
+    <color name="raven_surface">#FFFFFF</color>       <!-- cards, toolbar, input row -->
+    <color name="raven_surface_high">#F2ECE2</color>  <!-- input fields, raised tiles -->
+    <color name="raven_stroke">#E5DDD0</color>        <!-- subtle dividers/outlines -->
+    <color name="raven_text">#1F2430</color>          <!-- primary text on light bg -->
+    <color name="raven_text_dim">#6B7280</color>      <!-- secondary text/icons -->
+    <color name="raven_accent">#7C5CFF</color>        <!-- brand purple -->
     <color name="raven_accent_dim">#5A3FE0</color>
-    <color name="raven_danger">#E55353</color>
-    <color name="raven_bubble_user">#2A2F3A</color>
-    <color name="raven_bubble_ai">#1A2330</color>
-    <color name="raven_bubble_peer">#23202E</color>
+    <color name="raven_danger">#D94545</color>
+    <color name="raven_bubble_user">#E8E1FF</color>   <!-- you (right side, lavender) -->
+    <color name="raven_bubble_ai">#FFF1E0</color>     <!-- Raven (left, warm cream) -->
+    <color name="raven_bubble_peer">#E6F0FF</color>   <!-- other peers (soft blue) -->
 </resources>

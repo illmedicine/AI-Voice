@@ -246,6 +246,41 @@ public class RavenApi {
         public List<ChatMessage> messages = new ArrayList<>();
     }
 
+    /**
+     * POST /raven/tts — fetch ElevenLabs MP3 audio for `text` using the
+     * configured voice. Writes the response body to `outFile` and returns
+     * via callback when complete. Runs on an OkHttp background thread.
+     */
+    public void streamTts(String text, @Nullable String voiceId, java.io.File outFile, Cb<java.io.File> cb) {
+        JSONObject body = new JSONObject();
+        try {
+            body.put("text", text);
+            if (voiceId != null && !voiceId.isEmpty()) body.put("voiceId", voiceId);
+        } catch (JSONException ignored) {}
+        Request req = authed(new Request.Builder()
+                .url(baseUrl + "/raven/tts")
+                .post(RequestBody.create(body.toString(), JSON))).build();
+        http.newCall(req).enqueue(new Callback() {
+            @Override public void onFailure(@NonNull Call call, @NonNull IOException e) { cb.onResult(null, e); }
+            @Override public void onResponse(@NonNull Call call, @NonNull Response response) {
+                try (Response r = response) {
+                    if (!r.isSuccessful() || r.body() == null) {
+                        String s = r.body() != null ? r.body().string() : "";
+                        cb.onResult(null, new IOException("HTTP " + r.code() + ": " + s));
+                        return;
+                    }
+                    try (java.io.InputStream in = r.body().byteStream();
+                         java.io.FileOutputStream out = new java.io.FileOutputStream(outFile)) {
+                        byte[] buf = new byte[8 * 1024];
+                        int n;
+                        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+                    }
+                    cb.onResult(outFile, null);
+                } catch (Exception e) { cb.onResult(null, e); }
+            }
+        });
+    }
+
     // ---------- helpers ----------
     private static Callback simple(Cb<Void> cb) {
         return new Callback() {

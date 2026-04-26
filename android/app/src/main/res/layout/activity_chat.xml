@@ -108,6 +108,16 @@
             android:contentDescription="@string/chat_camera_on"
             xmlns:app="http://schemas.android.com/apk/res-auto" />
 
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnMic"
+            style="@style/Widget.Material3.Button.IconButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            app:icon="@android:drawable/ic_btn_speak_now"
+            app:iconTint="@color/raven_accent"
+            android:contentDescription="@string/chat_mic"
+            xmlns:app="http://schemas.android.com/apk/res-auto" />
+
         <EditText
             android:id="@+id/input"
             android:layout_width="0dp"

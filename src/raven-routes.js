@@ -18,6 +18,8 @@ import {
   MAX_MEMBERS,
 } from './store.js';
 import { grokChat } from './grok.js';
+import { elevenlabsTTS, contentTypeForFormat } from './elevenlabs.js';
+import { Readable } from 'node:stream';
 import { config } from './config.js';
 import { dbEnabled } from './db.js';
 
@@ -218,6 +220,39 @@ ravenRouter.post('/raven/chats/:id/ask', requireRavenAuth, async (req, res) => {
     res.json({ user: userMsg, assistant: botMsg });
   } catch (err) {
     req.log?.error({ err }, 'raven ask failed');
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// ---------- TTS ----------
+// Stream Raven's voice to a signed-in client. Uses ElevenLabs under the hood.
+// POST /raven/tts  { text, voiceId? }
+// Returns: audio/mpeg (mp3) stream by default.
+ravenRouter.post('/raven/tts', requireRavenAuth, async (req, res) => {
+  try {
+    const { text, voiceId } = req.body || {};
+    if (!text || !String(text).trim()) {
+      return res.status(400).json({ error: '`text` required' });
+    }
+    // Strip "[mood: x]" prefix the model emits — TTS shouldn't speak it.
+    const clean = String(text).replace(/^\s*\[mood:[^\]]*\]\s*/i, '').trim();
+    if (!clean) return res.status(400).json({ error: 'empty after cleanup' });
+
+    const upstream = await elevenlabsTTS({
+      text: clean,
+      voiceId: voiceId || config.elevenlabs.voiceId,
+    });
+    res.setHeader('Content-Type', contentTypeForFormat(config.elevenlabs.outputFormat));
+    res.setHeader('Cache-Control', 'no-store');
+    Readable.fromWeb(upstream.body).on('error', (e) => {
+      if (!res.headersSent) {
+        res.status(502).json({ error: 'tts stream error', detail: String(e?.message || e) });
+      } else {
+        res.end();
+      }
+    }).pipe(res);
+  } catch (err) {
+    req.log?.error({ err }, 'raven tts failed');
     res.status(err.status || 500).json({ error: err.message });
   }
 });
